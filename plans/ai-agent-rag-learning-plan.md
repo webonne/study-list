@@ -57,18 +57,26 @@
 
 两条轨道共用的判断：
 - **向量库从 pgvector 起步**，不要一上来就引专用向量库。一个库解决元数据过滤 + 向量检索 + 事务，运维成本最低。
-- **Embedding 要单独选型**（Anthropic 不提供 embedding 接口）。中文场景优先 bge-m3 / BGE-zh 系列。
+- **Embedding 要单独选型**（对话模型的接口不含 embedding）。中文场景优先 bge-m3 / BGE-zh 系列。
 - **Embedding 和 rerank 的本地推理、文档解析，交给 Python/Java 服务**，Go 调 HTTP。Go 在这一层生态确实薄，硬写是浪费时间。
 - **Rerank 必做**，是性价比最高的单点提升。
 
 
-### 1.2 关于模型选择（以 Claude 为例）
+### 1.2 关于模型选择
 
-| 模型 | Model ID | 适用场景 |
+**本计划的代码用 DeepSeek**，走 **OpenAI 兼容协议**（`POST /chat/completions`）。
+
+| 档位 | 模型 id | 适用场景 |
 |---|---|---|
-| Claude Opus 5 | `claude-opus-5` | 复杂推理、Agent 主控、代码生成。默认首选 |
-| Claude Sonnet 5 | `claude-sonnet-5` | 日常对话、成本敏感的高并发链路 |
-| Claude Haiku 4.5 | `claude-haiku-4-5` | 批量抽取、分类、子 Agent 里的"苦力"任务 |
+| 强 | `deepseek-v4-pro` | 复杂推理、Agent 主控、代码生成。默认首选 |
+| 快/省 | `deepseek-v4-flash` | 日常对话、批量抽取、成本敏感的高并发链路 |
+
+⚠️ **模型名会变，以官方文档当前版本为准。** 旧别名 `deepseek-chat` / `deepseek-reasoner`
+已于 2026-07-24 下线——**网上大量教程（和 AI 给你的答案）还在用它们**。
+把模型 id 做成配置项，别写死在代码里。
+
+**为什么选 OpenAI 兼容协议**：换供应商只改 base-url 和模型名，代码一行不动。
+通义、Kimi、本地 vLLM / Ollama 都是同一套接口，这让你的学习成果不绑定任何一家。
 
 选型方法论（比记住某个型号更重要）：
 - **先用最强的模型把效果做出来**，跑通 eval 拿到质量基线，再往下降级找"质量不掉的最便宜档位"。反过来（先便宜再调优）会让你分不清是模型不行还是 prompt 不行。
@@ -90,30 +98,30 @@
 3. **思考（extended thinking / adaptive thinking）**：新模型上开启自适应思考，复杂任务质量明显提升；注意"思考深度"是可调的成本旋钮（effort）。
 4. **结构化输出**：让模型稳定返回 JSON —— 用 `output_config.format`（structured outputs）或工具的 `strict: true`，而不是在 prompt 里跪求"请只返回 JSON"。这是 Java 这种强类型语言接入 LLM 的关键点。
 5. **Prompt Caching**：把稳定的长前缀（系统提示、知识片段、工具定义）缓存起来，重复请求只付很低的读取成本。**规则是前缀匹配**：渲染顺序是 `tools` → `system` → `messages`，前缀里任何一个字节变了，后面全部失效。所以"当前时间戳""随机 requestId""每次顺序不同的 JSON"放进系统提示里，会让缓存命中率直接归零。验证方法：看响应 `usage.cache_read_input_tokens` 是不是 > 0。
-6. **错误处理与重试**：区分可重试（429 / 5xx / 网络）和不可重试（400 / 404）。SDK 有分类异常（`RateLimitException` / `NotFoundException` / `AnthropicServiceException`），按"最具体优先"写 catch 链，别一把 `catch (Exception)`。
+6. **错误处理与重试**：区分可重试（429 / 5xx / 网络）和不可重试（400 / 401 / 404）。按状态码分类处理，别一把 `catch (Exception)`。⚠️ 直接用 HTTP 客户端时**没有内置重试**，退避策略要自己写——这反而逼你想清楚"哪些错误该重试、退避多久、总耗时上限"。
 7. **Token 计费直觉**：input / output / cache read / cache write 分开计价，output 通常比 input 贵 5 倍左右。用 `count_tokens` 接口而不是自己估算。
 
 **Java 最小示例**
 
 ```java
-import com.anthropic.client.AnthropicClient;
-import com.anthropic.client.okhttp.AnthropicOkHttpClient;
-import com.anthropic.models.messages.Message;
-import com.anthropic.models.messages.MessageCreateParams;
+// 直接用 Spring 的 RestClient 调 OpenAI 兼容接口，不引第三方 LLM SDK
+record ChatMessage(String role, String content) {}
+record Req(String model, List<ChatMessage> messages,
+           @JsonProperty("max_tokens") Integer maxTokens) {}
 
-AnthropicClient client = AnthropicOkHttpClient.fromEnv(); // 读 ANTHROPIC_API_KEY
-
-MessageCreateParams params = MessageCreateParams.builder()
-        .model("claude-opus-5")
-        .maxTokens(16000L)
-        .addUserMessage("用一句话解释什么是 RAG")
+RestClient client = RestClient.builder()
+        .baseUrl("https://api.deepseek.com")
+        .defaultHeader("Authorization", "Bearer " + System.getenv("DEEPSEEK_API_KEY"))
         .build();
 
-Message response = client.messages().create(params);
-response.content().stream()
-        .flatMap(block -> block.text().stream())
-        .forEach(t -> System.out.println(t.text()));
+var resp = client.post().uri("/chat/completions")
+        .body(new Req("deepseek-v4-pro",
+                List.of(new ChatMessage("user", "用一句话解释 RAG")), 4096))
+        .retrieve()
+        .body(ChatCompletionResponse.class);
 ```
+
+完整可运行版本见 [`projects/project-0-llm-gateway/`](../projects/project-0-llm-gateway/)。
 
 **本阶段产出（Project 0）**
 一个 Spring Boot 服务，提供 `/chat` 接口：支持多轮对话（历史存 Redis）、SSE 流式输出、结构化输出（返回强类型 DTO）、统一异常与重试、每次调用记录 token 与耗时到日志/Micrometer。
@@ -246,13 +254,13 @@ Java 侧要点：
 | 手写循环 | 自己写 `while (stopReason == TOOL_USE)` | 想完全掌控控制流；学习阶段**必须手写一遍** |
 | SDK Tool Runner | 只写工具函数，SDK 驱动循环 | 大多数自定义工具 Agent |
 | 托管 Agent（Managed Agents） | 只写 Agent 配置 + 工具结果 | 需要服务端托管会话、沙箱执行、定时触发 |
-| Claude Agent SDK | prompt + options | 偏编码/文件系统类 Agent（注意：这是独立产品，非 API SDK 的一部分） |
+| 现成 Agent 框架 | prompt + options | 偏编码/文件系统类 Agent。**学习阶段不建议**，会把循环藏起来 |
 
 **学习路径建议**：手写循环（理解本质）→ Tool Runner（提效）→ 按需了解托管方案。
 
 #### 4.3 MCP（Model Context Protocol）
 
-- **是什么**：一个开放协议，把"工具/数据源"标准化成 MCP Server，任何支持 MCP 的客户端（Claude Code、各种 IDE、你自己的 Agent）都能即插即用。
+- **是什么**：一个开放协议，把"工具/数据源"标准化成 MCP Server，任何支持 MCP 的客户端（各种 AI IDE、命令行工具、你自己的 Agent）都能即插即用。**MCP 是开放协议，不绑定任何模型厂商。**
 - **为什么对 Java 工程师重要**：它相当于 AI 世界的"微服务契约"。你可以把公司的订单查询、工单系统、监控系统封装成 MCP Server，所有 AI 应用共享，而不是每个应用重写一遍工具。
 - **学法**：先用现成的 MCP Server（文件系统、GitHub、数据库），再用 Java MCP SDK（Spring AI 已集成 MCP）自己写一个内部系统的 MCP Server。
 - 在 Messages API 里用 MCP connector 时注意：`mcp_servers` 和 `tools` 里的 `mcp_toolset` **两半都要写**，只写一半会报参数校验错误。
@@ -358,8 +366,10 @@ Agent 跑十几轮之后，上下文会爆炸。三种应对手段：
 ## 5. 学习资源
 
 **官方文档（第一优先级，中文资料普遍滞后且有错）**
-- Anthropic 官方文档：https://docs.anthropic.com （Tool use、Prompt caching、Agent 相关的工程文章质量很高）
-- Anthropic 工程博客《Building effective agents》《Contextual Retrieval》—— 必读，且读两遍
+- **DeepSeek API 文档**：https://api-docs.deepseek.com （模型 id、定价、上下文缓存规则以它为准）
+- OpenAI API 参考：https://platform.openai.com/docs/api-reference （兼容协议的字段定义看这里最全）
+- Anthropic 工程博客《Building effective agents》《Contextual Retrieval》—— **方法论层面必读**，
+  和用哪家模型无关，读两遍
 - Model Context Protocol：https://modelcontextprotocol.io
 - Spring AI：https://docs.spring.io/spring-ai/reference/
 - LangChain4j：https://docs.langchain4j.dev/
@@ -369,7 +379,7 @@ Agent 跑十几轮之后，上下文会爆炸。三种应对手段：
 - Andrej Karpathy 的 LLM 系列视频（想深入原理时看）
 
 **跟进前沿（每周 30 分钟足够）**
-- Anthropic / OpenAI 官方博客
+- 各家模型厂商的官方博客与更新日志（**模型 id 和定价变动就在这里**）
 - Hugging Face 博客与 MTEB 榜单（挑 embedding / rerank 模型时看）
 
 **避坑提示**：AI 领域 API 变化极快，训练数据里的写法（包括各种教程和你问到的 AI 给的答案）经常已经过时。**任何 API 用法以官方文档当前版本为准**，尤其是模型 ID、参数名、beta header 这类细节。

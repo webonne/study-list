@@ -7,6 +7,8 @@
 **执行顺序按 [ROADMAP.md](../ROADMAP.md) 的编号走**；分配策略见 [tracks/README.md](README.md)——**别把所有阶段都用 Go 再做一遍**。
 
 > **Go 相关任务一览**：`#08–#12`（阶段一双语，12h）· `#27–#33`（阶段四主力，36h）· `#41`（生产化，4h）· 可选 `⊕#21+` `⊕#47`
+>
+> **调用的是 DeepSeek**，走 OpenAI 兼容协议，和 Java 版同一套字段——两版对照着看差异最清楚。
 
 ---
 
@@ -120,7 +122,7 @@ for _, v := range items {
 
 | 层 | 选型 | 说明 |
 |---|---|---|
-| **LLM SDK** | **`github.com/anthropics/anthropic-sdk-go`** | 官方 SDK。`go get github.com/anthropics/anthropic-sdk-go` |
+| **LLM 调用** | **标准库 `net/http` + `encoding/json`**，直调 OpenAI 兼容接口（DeepSeek） | 零依赖，和 Java 版用同一套协议、同一组字段，两版对照着看差异最清楚。SSE 流式用 `bufio.Scanner` 解析，本身就是很好的 Go 练习 |
 | **应用框架** | **建议不用框架，直接用官方 SDK 自己封装** | Go 的 AI 框架生态（eino、langchaingo 等）不如 Python/Java 成熟。**这反而是好事**：你会被迫理解底层循环，而不是被抽象包着。等你手写过一遍 Agent 循环，再评估要不要引框架 |
 | **向量库** | **pgvector**（配 `pgx` 驱动）起步；规模大了用 Qdrant / Milvus 官方 Go client | 和 Java 轨道保持一致，便于对比 |
 | **关键词检索** | PostgreSQL 全文检索 或 Elasticsearch（`go-elasticsearch`） | 混合检索必备 |
@@ -130,15 +132,17 @@ for _, v := range items {
 | **可观测** | `log/slog` + OpenTelemetry Go SDK + 内置 pprof | |
 | **HTTP 客户端** | 标准库 `net/http`，**注意复用 `http.Client`、设超时** | 别每次 new 一个 |
 
-### 模型 ID 的注意点
+### 模型 id 与 base URL
 
 ```go
-// anthropic.Model 是 string 的别名，直接传字符串 id
-Model: "claude-opus-5"
+const (
+    baseURL = "https://api.deepseek.com"   // 换通义 / Kimi / 本地 vLLM 只改这里
+    model   = "deepseek-v4-pro"            // 便宜档位：deepseek-v4-flash
+)
 ```
 
-SDK 里有 `anthropic.ModelClaude*` 这类常量，但**常量的更新会滞后于模型发布**——某个 SDK 版本里可能只有上一代模型的常量。
-**不要因为"有常量"就选某个模型**，字符串 id 在任何 SDK 版本上都能用。
+⚠️ **模型名会变**。旧别名 `deepseek-chat` / `deepseek-reasoner` 已于 2026-07-24 下线，
+网上大量教程还在用它们。**做成配置项**，报 "model not found" 时先查官方文档。
 
 ---
 
@@ -146,89 +150,113 @@ SDK 里有 `anthropic.ModelClaude*` 这类常量，但**常量的更新会滞后
 
 ### 阶段一 · API 基本功 ｜ **#08–#12**（12h）｜ ✅ 完整做一遍
 
-**这是学 Go 的最佳起点**：代码量小、没有复杂依赖，而且和你刚写完的 Java 版逐行对照，语言差异一目了然。
+**这是学 Go 的最佳起点**：代码量小、零依赖，而且和你刚写完的 Java 版逐行对照，语言差异一目了然。
 
 ```go
-import (
-    "context"
-    "github.com/anthropics/anthropic-sdk-go"
-    "github.com/anthropics/anthropic-sdk-go/option"
-)
+type Message struct {
+    Role    string `json:"role"`
+    Content string `json:"content"`
+}
 
-client := anthropic.NewClient()   // 默认读 ANTHROPIC_API_KEY
-// 或 anthropic.NewClient(option.WithAPIKey("..."))
+type ChatRequest struct {
+    Model     string    `json:"model"`
+    Messages  []Message `json:"messages"`
+    MaxTokens int       `json:"max_tokens"`
+    Stream    bool      `json:"stream,omitempty"`   // omitempty：false 时不发出去
+}
 
-resp, err := client.Messages.New(ctx, anthropic.MessageNewParams{
-    Model:     "claude-opus-5",
-    MaxTokens: 16000,
-    Messages: []anthropic.MessageParam{
-        anthropic.NewUserMessage(anthropic.NewTextBlock("用一句话解释 RAG")),
-    },
-})
-if err != nil { return err }
+type Usage struct {
+    PromptTokens     int `json:"prompt_tokens"`
+    CompletionTokens int `json:"completion_tokens"`
+    // DeepSeek 特有的自动缓存统计
+    PromptCacheHitTokens  int `json:"prompt_cache_hit_tokens"`
+    PromptCacheMissTokens int `json:"prompt_cache_miss_tokens"`
+}
 
-for _, block := range resp.Content {
-    switch v := block.AsAny().(type) {
-    case anthropic.TextBlock:
-        fmt.Println(v.Text)
+func (c *Client) Complete(ctx context.Context, msgs []Message) (*ChatResponse, error) {
+    body, _ := json.Marshal(ChatRequest{Model: c.model, Messages: msgs, MaxTokens: 4096})
+
+    req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+        c.baseURL+"/chat/completions", bytes.NewReader(body))
+    if err != nil {
+        return nil, err
     }
+    req.Header.Set("Authorization", "Bearer "+c.apiKey)
+    req.Header.Set("Content-Type", "application/json")
+
+    resp, err := c.httpClient.Do(req)
+    if err != nil {
+        return nil, fmt.Errorf("调用 LLM 失败: %w", err)   // %w 保留错误链，errors.Is/As 才能用
+    }
+    defer resp.Body.Close()                                // ⚠️ 忘了它就是 goroutine + 连接泄漏
+
+    if resp.StatusCode != http.StatusOK {
+        raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+        return nil, fmt.Errorf("LLM 返回 %d: %s", resp.StatusCode, raw)
+    }
+
+    var out ChatResponse
+    if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+        return nil, fmt.Errorf("解析响应失败: %w", err)
+    }
+    return &out, nil
 }
 ```
 
-内容块用 **`block.AsAny()` + type switch** 取值——这是 Go SDK 处理联合类型的统一姿势，后面 streaming、tool use 全是这个模式。顺便，它也是你理解 Go 接口和类型断言的最好例子。
+**Go 这里比 Java 舒服的地方**：`encoding/json` 默认就忽略未知字段——
+Java 要专门加 `@JsonIgnoreProperties(ignoreUnknown = true)` 才不会因为厂商加字段而崩。
+而 `omitempty` 对应 Java 的 `@JsonInclude(NON_NULL)`，两边都要注意"别把空值发出去"。
 
-**⚠️ 流式：Go 没有 `GetFinalMessage()`**
-
-Java / Python SDK 有"拿最终完整消息"的便捷方法，**Go 没有**，要自己累加：
+**⚠️ 流式：SSE 要自己解析**
 
 ```go
-stream := client.Messages.NewStreaming(ctx, params)
-message := anthropic.Message{}
-for stream.Next() {
-    event := stream.Current()
-    message.Accumulate(event)                    // ← 累加出完整消息
-    switch ev := event.AsAny().(type) {          // ← 同时可以逐字输出
-    case anthropic.ContentBlockDeltaEvent:
-        switch d := ev.Delta.AsAny().(type) {
-        case anthropic.TextDelta:
-            fmt.Print(d.Text)
-        }
+req.Header.Set("Accept", "text/event-stream")
+// 请求体里 Stream: true
+
+scanner := bufio.NewScanner(resp.Body)
+scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)   // ⚠️ 默认 64KB 上限，长行会截断
+for scanner.Scan() {
+    line := scanner.Text()
+    if !strings.HasPrefix(line, "data: ") {
+        continue                                       // 空行、注释行直接跳过
     }
+    payload := strings.TrimPrefix(line, "data: ")
+    if payload == "[DONE]" {
+        break                                          // ⚠️ 这不是 JSON，先判断再解析
+    }
+    var chunk StreamChunk
+    if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+        return err
+    }
+    // chunk.Choices[0].Delta.Content 就是增量文本
 }
-if err := stream.Err(); err != nil { return err }  // ← 别忘了检查流错误
+if err := scanner.Err(); err != nil {                  // ⚠️ 循环正常结束不代表没出错
+    return err
+}
 ```
 
 三个必须做对的点：
-1. `message.Accumulate(event)` 累加，否则你只有碎片没有完整消息
-2. **循环结束后必须检查 `stream.Err()`**——流中途出错时循环只是正常结束，不会告诉你
-3. 把 `ctx` 传进去，客户端断开时流自动取消，**不会继续烧 token**（这是 Go 相对 Java 的真实优势，务必亲手验证一次）
+1. **`[DONE]` 不是 JSON**，先判断再 `Unmarshal`，否则每次流结束都报解析错误
+2. **循环结束后检查 `scanner.Err()`**——流中途断开时循环只是安静地结束
+3. **把 `ctx` 传进 `http.NewRequestWithContext`**，客户端断开时请求自动取消，
+   **不会继续烧 token**（这是 Go 相对 Java 的真实优势，务必亲手验证一次）
 
-**Prompt Caching**：`System` 字段是 `[]TextBlockParam`，在最后一块上设 `CacheControl`：
-
-```go
-System: []anthropic.TextBlockParam{{
-    Text:         longSystemPrompt,
-    CacheControl: anthropic.NewCacheControlEphemeralParam(),
-}},
-```
-验证：`resp.Usage.CacheReadInputTokens` 和 `resp.Usage.CacheCreationInputTokens`。
-
-**错误处理**：用 `errors.As` 取出 API 错误再按状态码分支：
+**错误处理**：Go 没有异常，用 `%w` 包装保留错误链，上层用 `errors.Is` / `errors.As` 判断：
 
 ```go
-var apierr *anthropic.Error
-if errors.As(err, &apierr) {
-    switch apierr.StatusCode {
-    case 429: // 限流，读 retry-after 退避
-    case 404: // 不可重试
-    default:  // 5xx 可重试
-    }
+var netErr net.Error
+switch {
+case errors.Is(err, context.Canceled):        // 用户断开，不算故障，别告警
+case errors.As(err, &netErr) && netErr.Timeout():  // 超时，可重试
+default:                                       // 看业务错误码决定
 }
 ```
+
 对照 Java 的 catch 链，体会「错误是值」和「异常是控制流」的区别——同一个逻辑，两种语言的表达完全不同。
 
 **Go 侧额外产出**：`projects/project-0-llm-gateway-go/`，功能和 Java 版对齐。
-写完做一件事：**对照两版代码写一篇笔记**，记录「同一个功能，Java 怎么写 / Go 怎么写 / 哪个更顺手」。这篇笔记会是你 Go 认知的地基。
+写完做一件事：**对照两版代码写一篇笔记**，记录「同一个功能，Java 怎么写 / Go 怎么写 / 哪个更顺手」。
+这篇笔记会是你 Go 认知的地基。
 
 ---
 
@@ -300,91 +328,108 @@ err := g.Wait()
 
 #### 手写循环（T4.1，仍然不许用框架）
 
-先手写，理解数据流。Go 的 type switch 让这个循环写起来意外地清晰：
+先手写，理解数据流。Go 的结构体 + 显式错误让这个循环意外地清晰：
 
 ```go
 for turn := 0; turn < maxTurns; turn++ {
-    resp, err := client.Messages.New(ctx, params)
-    if err != nil { return err }
+    resp, err := client.Complete(ctx, messages, tools)
+    if err != nil {
+        return err
+    }
+    choice := resp.Choices[0]
+    messages = append(messages, choice.Message)       // assistant 消息，含 tool_calls
 
-    params.Messages = append(params.Messages, resp.ToParam())
-
-    if resp.StopReason != anthropic.StopReasonToolUse {
-        break   // end_turn / max_tokens / refusal ...
+    if choice.FinishReason != "tool_calls" {
+        break                                          // stop / length / content_filter ...
     }
 
-    var results []anthropic.ContentBlockParamUnion
-    for _, block := range resp.Content {
-        if tu, ok := block.AsAny().(anthropic.ToolUseBlock); ok {
-            out, err := execute(ctx, tu)           // 真实业务逻辑
-            results = append(results,
-                anthropic.NewToolResultBlock(tu.ID, out, err != nil))  // 失败也要回传
+    for _, call := range choice.Message.ToolCalls {
+        out, err := execute(ctx, call)
+        // ⚠️ 失败也要作为结果回传，让模型自己决定重试或换路径，不要中断循环
+        if err != nil {
+            out = fmt.Sprintf("工具执行失败: %v", err)
         }
+        messages = append(messages, Message{
+            Role:       "tool",
+            ToolCallID: call.ID,                       // ⚠️ 必须回带，否则对不上
+            Content:    out,
+        })
     }
-    // ⚠️ 所有 tool_result 放在同一条 user 消息里
-    params.Messages = append(params.Messages, anthropic.NewUserMessage(results...))
 }
 ```
 
+⚠️ **OpenAI 兼容协议里，每个 tool_call 对应一条独立的 `role=tool` 消息**，且必须带 `tool_call_id`。
+看别家文档时注意：不同厂商在这里的协议不一样，别把两套写法混着抄。
+
 #### 并行工具调用（T4.3）—— Go 在这里完胜
 
-一条 assistant 消息里的多个 `tool_use` 应该并发执行。Go 版本干净得让人舒服：
+一条 assistant 消息里的多个 `tool_call` 应该并发执行。Go 版本干净得让人舒服：
 
 ```go
-results := make([]anthropic.ContentBlockParamUnion, len(toolUses))
+results := make([]Message, len(calls))
 g, gctx := errgroup.WithContext(ctx)
-for i, tu := range toolUses {
-    i, tu := i, tu
+for i, call := range calls {
+    i, call := i, call
     g.Go(func() error {
-        out, err := execute(gctx, tu)
-        results[i] = anthropic.NewToolResultBlock(tu.ID, out, err != nil)
+        out, err := execute(gctx, call)
+        if err != nil {
+            out = fmt.Sprintf("工具执行失败: %v", err)
+        }
+        results[i] = Message{Role: "tool", ToolCallID: call.ID, Content: out}
         return nil   // ← 注意：返回 nil，单个工具失败不该中断整批
     })
 }
 _ = g.Wait()
+messages = append(messages, results...)
 ```
 
-**注意那个 `return nil`**：单个工具失败要作为 `is_error` 结果回传给模型（让它自己决定重试或换路径），**而不是让整批中断**。这是 Agent 健壮性的关键细节，也是很容易写错的地方。
+**注意那个 `return nil`**：单个工具失败要作为结果回传给模型（让它自己决定重试或换路径），
+**而不是让整批中断**。这是 Agent 健壮性的关键细节，也是很容易写错的地方。
 按索引写入 `results` 切片是并发安全的（各 goroutine 写不同下标），但**用 `-race` 跑一遍确认**，养成习惯。
 
-#### Tool Runner（T4.1 之后用）
+#### 工具定义（T4.2）
 
-手写过一遍之后，可以用官方的 `toolrunner` 包。它最大的便利是**从 struct tag 自动生成 JSON Schema**，比 Java 手写 schema 舒服得多：
+OpenAI 兼容格式的 `tools` 数组，每个工具的 `parameters` 就是一份 JSON Schema：
 
 ```go
-import "github.com/anthropics/anthropic-sdk-go/toolrunner"
-
-type QueryLogsInput struct {
-    Service string `json:"service" jsonschema:"required,description=服务名，如 order-service"`
-    Since   string `json:"since"   jsonschema:"description=起始时间，RFC3339 格式"`
-}
-
-tool, err := toolrunner.NewBetaToolFromJSONSchema(
-    "query_logs",
-    "查询指定服务在某时间段内的错误日志，返回按错误类型聚合的统计",
-    func(ctx context.Context, in QueryLogsInput) (anthropic.BetaToolResultBlockParamContentUnion, error) {
-        // ...
-    },
-)
-
-runner := client.Beta.Messages.NewToolRunner(
-    []anthropic.BetaTool{tool},
-    anthropic.BetaToolRunnerParams{
-        BetaMessageNewParams: anthropic.BetaMessageNewParams{
-            Model: "claude-opus-5", MaxTokens: 16000,
-            Messages: []anthropic.BetaMessageParam{ /* ... */ },
+var queryLogsTool = Tool{
+    Type: "function",
+    Function: FunctionDef{
+        Name:        "query_logs",
+        Description: "查询指定服务在某时间段内的错误日志，返回按错误类型聚合的统计",
+        Parameters: map[string]any{
+            "type": "object",
+            "properties": map[string]any{
+                "service": map[string]any{"type": "string", "description": "服务名，如 order-service"},
+                "since":   map[string]any{"type": "string", "description": "起始时间，RFC3339 格式"},
+            },
+            "required":             []string{"service"},
+            "additionalProperties": false,
         },
-        MaxIterations: 15,   // ← 护栏之一，直接在这里设
     },
-)
-message, err := runner.RunToCompletion(ctx)
+}
 ```
 
-⚠️ **注意 Beta 命名空间**：`BetaTool` / `BetaMessageParam` / `BetaTextBlock`，和非 beta 的 `Tool` / `MessageParam` / `TextBlock` 是**不同的类型**，别混用（编译器会提醒你，但错误信息可能让人困惑）。
+手写 map 很啰嗦，可以用 `invopop/jsonschema` 之类的库从 struct tag 生成。
+但**无论怎么生成，都要把最终 schema 打印出来看一眼**——
+schema 写错不会报错，只会让模型开始传错参数，然后你陷入玄学调试。
 
-**做人工确认（T4.4）不需要退回手写循环**：用 `NextMessage()` / `All()` 逐步迭代，在每一步检查即将执行的工具；或者直接在工具函数内部做拦截（拿到 ctx 里的会话信息，判断是否需要确认）。
+⚠️ `description` 就是给模型看的接口文档。**写不好，模型就选错工具、传错参**——
+这是 Agent 效果的头号影响因素，比换模型有用得多。
 
-⚠️ `jsonschema` tag **写错不会报错，只会静默生成错误的 schema**，然后模型开始传错参数。**每个工具写完后，先把生成的 schema 打印出来看一眼**——这个习惯能省掉大量玄学调试。
+#### 上下文管理（T4.5）
+
+⚠️ **这里和 Anthropic 那套不一样，别照抄教程**：服务端自动压缩（compaction）、
+上下文清理（context editing）这些是 **Anthropic API 的特有能力**，
+OpenAI 兼容协议（含 DeepSeek）**没有**对应字段。
+
+在这条技术栈上，上下文管理要**你自己实现**：
+- **滚动摘要**：历史超过阈值时，用一次便宜模型的调用把早期对话压成一段摘要，替换掉原文
+- **按需丢弃**：直接扔掉最早的若干轮（最简单，但会"忘事"）
+- **外部记忆**：要长期记住的事实写进 KV / 数据库，需要时检索回来塞进上下文
+
+**这反而是好事**：自己实现一遍，你会真正理解"上下文窗口是稀缺资源"这件事，
+而不是调一个参数就以为解决了。
 
 #### MCP Server —— 用 Go 写的最佳理由（T4.6）
 
@@ -432,17 +477,17 @@ Go 侧独有的重点：
 
 ---
 
-### 阶段六 · 基础 ｜ **⊕#47**（3h，P2）｜ ✅ 读 Go SDK 源码
+### 阶段六 · 基础 ｜ **⊕#47**（3h，P2）｜ ✅ 读优秀 Go 代码
 
-**Go SDK 是学习 Go 工程实践的上好材料**：代码量不大、可读性高，而且用到了很多值得学的模式。
+既然不引 LLM SDK，这一项改成读**标准库和你已经在用的库**——学 Go 工程实践的材料同样上好：
 
-建议读这几处：
-- **联合类型怎么建模**：`AsAny()` + type switch 是怎么实现的（Go 没有 sum type，看它怎么绕）
-- **参数构造**：`MessageNewParams` 的可选字段设计（对照 Java 的 builder 模式）
-- **流式实现**：`NewStreaming` 和 `Accumulate` 的内部逻辑
-- **`option.RequestOption`** 模式：Go 社区最常用的可选参数写法，学会了到处能用
+- **`net/http`** 的 `Client` / `Transport`：连接池、超时分层是怎么设计的（对照你自己写的客户端）
+- **`context`** 包本身：只有一百多行，读完你会彻底理解取消是怎么级联的
+- **`errgroup`**：加起来不到 100 行，却解决了你在阶段二、四反复用到的问题
+- **`option.RequestOption` 这类函数式选项模式**：Go 社区最常用的可选参数写法，学会了到处能用
 
-读完写一篇笔记：**「Go SDK 的哪些设计我会搬到自己的项目里」**。这比读十篇 Go 最佳实践文章有用。
+读完写一篇笔记：**「哪些设计我会搬到自己的项目里」**。
+这比读十篇 Go 最佳实践文章有用。
 
 ---
 
@@ -454,14 +499,14 @@ Go 侧独有的重点：
 
 | # | 指标 | 达标线 | 对应任务 |
 |---|---|---|---|
-| G1 | 流式累加正确 | 用 `Accumulate` 拿到的完整消息，与非流式请求的结果结构一致；且 `stream.Err()` 被检查 | **#10** |
+| G1 | SSE 解析正确 | 流式拼出的完整文本与非流式结果一致；`[DONE]` 不当 JSON 解析；**循环后检查了 `scanner.Err()`** | **#10** |
 | G2 | **context 取消真的生效** | 客户端断开后，上游 LLM 调用**在 1s 内停止**（用日志或 token 计数证明没有继续消耗） | **#10** / #41 |
 | G3 | 并发召回 | 向量 + BM25 并行执行，总耗时 ≈ max(两者) 而非 sum；任一失败时另一路能被取消 | ⊕#21+ |
 | G4 | **race 干净** | `go test -race ./...` **零告警** | **#29** / #41 |
 | G5 | 并行工具调用 | 一轮内并发执行 ≥ 2 个工具，且**单个工具失败不中断整批** | **#29** |
 | G6 | **单二进制交付** | MCP Server 交叉编译出 Linux / macOS 二进制，**在没装 Go 的机器上直接运行成功** | **#32** |
 | G7 | **无 goroutine 泄漏** | 跑完 20 轮长会话后，pprof 里 goroutine 数量**回落到基线附近** | **#33** / #41 |
-| G8 | schema 正确性 | 每个工具的 `jsonschema` tag 生成的 schema 都**打印检查过**，与预期一致 | **#28** |
+| G8 | schema 正确性 | 每个工具的 `parameters` schema 都**打印检查过**，与预期一致（schema 写错不报错，只会让模型传错参） | **#28** |
 
 G2 和 G7 是 Go 轨道的招牌指标——**它们在 Java 里要么很难做，要么做起来很别扭**。能拿下这两条，说明你抓住了 Go 的核心价值，而不只是换了套语法。
 
@@ -482,14 +527,14 @@ G2 和 G7 是 Go 轨道的招牌指标——**它们在 Java 里要么很难做�
 
 | 症状 | 大概率原因 |
 |---|---|
-| 流式跑完了但拿不到完整消息 | 没调 `message.Accumulate(event)`。Go 没有 `GetFinalMessage()` |
-| 流式中途静默结束、没报错 | 忘了在循环后检查 `stream.Err()` |
-| 客户端断开后 token 还在涨 | `ctx` 没传进 SDK 调用，或中途用了 `context.Background()` 把链路截断了 |
-| 工具参数总是不对 | `jsonschema` tag 写错（拼写、逗号、`required` 位置）。**打印 schema 检查** |
-| 编译报类型不匹配 | beta 和非 beta 命名空间混用了（`BetaTool` vs `Tool`） |
+| 流式解析每次都在结尾报错 | 把 `data: [DONE]` 当 JSON 解析了。要先判断再 `Unmarshal` |
+| 流式中途静默结束、没报错 | 忘了在循环后检查 `scanner.Err()`；或长行超过 `bufio.Scanner` 默认 64KB 上限被截断 |
+| 客户端断开后 token 还在涨 | 用了 `http.NewRequest` 而不是 `NewRequestWithContext`，或中途用 `context.Background()` 把链路截断了 |
+| 工具参数总是不对 | schema 写错（`required` 漏了、类型不对），或 `description` 太含糊。**先打印 schema 检查，再改描述** |
+| 请求被拒绝说参数非法 | 把 `nil`/零值字段发出去了。可选字段加 `omitempty` |
 | `err != nil` 成立但错误内容是空的 | typed nil 陷阱 |
 | 并发工具调用偶发数据错乱 | 多个 goroutine 写同一块内存。跑 `-race` |
-| 服务跑久了内存持续上涨 | goroutine 泄漏（stream 没关 / body 没 close）。查 pprof |
+| 服务跑久了内存持续上涨 | goroutine 泄漏：`defer resp.Body.Close()` 忘了，或流没读完就返回。查 pprof |
 | 大量 `context deadline exceeded` | 超时设太短，或超时没有按「单次请求 / 整个会话」分层 |
 | JSON 反序列化字段全是零值 | struct 字段首字母小写（未导出），或 tag 名字对不上 |
 | HTTP 调用偶发失败率高 | 每次 new 了 `http.Client`，连接没复用；或没设超时用了默认无限等待 |

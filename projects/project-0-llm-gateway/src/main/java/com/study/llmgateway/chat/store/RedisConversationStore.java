@@ -8,7 +8,6 @@ import org.springframework.context.annotation.Primary;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -56,7 +55,7 @@ public class RedisConversationStore implements ConversationStore {
         redis.opsForList().rightPush(key, writeTurn(turn));
         // 只保留最近 N 条：负数下标从右往左数，-N 到 -1 就是最后 N 条
         redis.opsForList().trim(key, -properties.getMaxHistoryMessages(), -1);
-        redis.expire(key, Duration.ofSeconds(properties.getSessionTtlSeconds()));
+        redis.expire(key, properties.getSessionTtl());
     }
 
     @Override

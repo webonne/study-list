@@ -1,16 +1,16 @@
 package com.study.llmgateway.chat.dto;
 
 /**
- * token 用量四件套。
+ * 对外暴露的 token 用量。
  *
- * <p>四类分开计价，缓存读取远比普通输入便宜——所以 #05 prompt caching
- * 是成本优化里第一个该做的（免费收益，不牺牲任何质量）。
- *
- * <p>验证缓存有没有生效，就看 {@code cacheReadInputTokens} 是不是 &gt; 0。
+ * <p>{@code cacheHitTokens} 是 DeepSeek 的自动上下文缓存命中量，
+ * 是 #05 的核心观测指标——命中率上不去，说明你的请求前缀不稳定。
  */
 public record TokenUsage(
-        long inputTokens,
-        long outputTokens,
-        long cacheReadInputTokens,
-        long cacheCreationInputTokens) {
+        long promptTokens,
+        long completionTokens,
+        long totalTokens,
+        long cacheHitTokens,
+        long cacheMissTokens,
+        double cacheHitRatio) {
 }

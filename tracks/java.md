@@ -22,26 +22,28 @@
 
 | 层 | 选型 | 说明 |
 |---|---|---|
-| **LLM SDK** | **官方 `com.anthropic:anthropic-java`** | 直连 API，功能最全、更新最快。tool use / streaming / 缓存 / 结构化输出都有一等支持 |
+| **LLM 调用** | **Spring `RestClient` 直调 OpenAI 兼容接口**（DeepSeek）。零第三方 LLM 依赖 | 阶段一的目标是看清协议本身，SDK 恰好会把它藏起来。副产品：换任何兼容服务只改配置 |
 | **应用框架** | **Spring AI**（推荐）或 **LangChain4j** | Spring AI 与 Spring Boot 集成度最好（自动配置、`ChatClient`、`VectorStore` 抽象、Advisor 链）；LangChain4j 抽象更贴近 LangChain，社区示例多 |
 | **向量存储** | 入门 **pgvector**；已有 ES 就用 **Elasticsearch / OpenSearch**（dense_vector + BM25）；规模大再上 **Milvus / Qdrant** | 不要一上来就引专用向量库。pgvector 一个库解决元数据过滤 + 向量检索 + 事务，运维成本最低 |
 | **关键词检索** | Elasticsearch BM25 / PostgreSQL 全文检索 | 混合检索必备 |
-| **Embedding** | Voyage / Cohere / 云厂商服务；本地可用 **bge-m3**、**BGE-large-zh**（ONNX Runtime 或独立 Python 服务暴露 HTTP） | ⚠️ Anthropic 不提供 embedding 接口，需单独选型 |
+| **Embedding** | 云厂商服务（DeepSeek 之外单独选）；本地可用 **bge-m3**、**BGE-large-zh**（ONNX Runtime 或独立 Python 服务暴露 HTTP） | ⚠️ 对话模型接口不含 embedding，需单独选型 |
 | **Rerank** | bge-reranker-v2-m3（本地）或云端 rerank 服务 | 性价比最高的单点提升 |
 | **文档解析** | Apache Tika、PDFBox、docx4j；复杂 PDF 用版面解析服务（MinerU / 商用 OCR） | **Java 在这一层比 Go 强很多**，离线数据处理交给 Java |
 | **序列化** | Jackson | 配合结构化输出反序列化成强类型 DTO |
 | **可观测** | Micrometer + Langfuse / OpenTelemetry | |
 | **异步** | `CompletableFuture` 或 WebFlux | 并行工具调用、多路召回用得上 |
 
-### 模型 ID 的注意点
+### 模型 id 的注意点
 
-```java
-MessageCreateParams.builder()
-    .model("claude-opus-5")   // 用 String 重载，对任何模型 id 都有效
-    .maxTokens(16000L)
+```yaml
+app:
+  llm:
+    base-url: https://api.deepseek.com
+    model: deepseek-v4-pro      # 便宜档位：deepseek-v4-flash
 ```
 
-SDK 里有 `Model.*` 的类型化常量，但**常量更新会滞后于模型发布**。用 `.model(String)` 重载最稳妥，别因为"有常量"而选模型。
+⚠️ **模型名会变**。旧别名 `deepseek-chat` / `deepseek-reasoner` 已于 2026-07-24 下线，
+网上大量教程还在用。**做成配置项，别写死在代码里**，报 "model not found" 时先查官方文档。
 
 ---
 
@@ -49,39 +51,45 @@ SDK 里有 `Model.*` 的类型化常量，但**常量更新会滞后于模型发
 
 ### 阶段一 · API 基本功
 
+完整可运行代码见 [`projects/project-0-llm-gateway/`](../projects/project-0-llm-gateway/)，这里只列要点。
+
 ```java
-import com.anthropic.client.AnthropicClient;
-import com.anthropic.client.okhttp.AnthropicOkHttpClient;
-import com.anthropic.models.messages.Message;
-import com.anthropic.models.messages.MessageCreateParams;
-
-AnthropicClient client = AnthropicOkHttpClient.fromEnv();  // 读 ANTHROPIC_API_KEY
-
-MessageCreateParams params = MessageCreateParams.builder()
-        .model("claude-opus-5")
-        .maxTokens(16000L)
-        .addUserMessage("用一句话解释什么是 RAG")
+RestClient client = RestClient.builder()
+        .requestFactory(jdkFactory)                      // 超时配在这里
+        .baseUrl("https://api.deepseek.com")
+        .defaultHeader("Authorization", "Bearer " + apiKey)
         .build();
 
-Message response = client.messages().create(params);
-response.content().stream()
-        .flatMap(block -> block.text().stream())
-        .forEach(t -> System.out.println(t.text()));
+var resp = client.post().uri("/chat/completions")
+        .body(request)
+        .retrieve()
+        .body(ChatCompletionResponse.class);
 ```
 
-**包结构要记住一点**：`client.messages()` 用 `com.anthropic.models.messages.*`，`client.beta().messages()` 用 `com.anthropic.models.beta.messages.*`。
-**两个包里都有 `MessageCreateParams`**——import 错了会得到很困惑的编译错误。
+**DTO 上两个注解不能少**：
+- `@JsonInclude(NON_NULL)` 在请求上——没设的字段别发出去，发个 `"temperature": null` 有些网关直接 400
+- `@JsonIgnoreProperties(ignoreUnknown = true)` 在响应上——**厂商会不定期加字段**
+  （reasoner 系列会多返回 `reasoning_content`），不加这个，对方一升级你就 500
 
-**流式**：SDK 返回 `StreamResponse`，Spring 侧用 `SseEmitter`（MVC）或 `Flux<ServerSentEvent>`（WebFlux）暴露。
+**流式**：请求体加 `stream=true`，响应是 SSE——逐行读 `data: {...}`，遇到 `data: [DONE]` 结束。
+Spring 侧用 `SseEmitter`（MVC）或 `Flux<ServerSentEvent>`（WebFlux）暴露。
 ⚠️ **客户端断开时要关掉上游流**，否则白烧 token。MVC 下注册 `SseEmitter.onCompletion` / `onTimeout` 回调；WebFlux 下用 `doOnCancel`。
 （这件事在 Go 里是 `ctx` 自动完成的，Java 需要手动接线——可以对照体会一下。）
 
-**结构化输出**：用 structured outputs 或工具的 `.strict(true)`，配合 `.putAdditionalProperty("additionalProperties", JsonValue.from(false))`，然后 Jackson 反序列化成强类型 DTO。
+**结构化输出**：请求体加 `response_format`。⚠️ **各家对"严格 JSON Schema"的支持程度不一样**，
+DeepSeek 的 JSON 模式和 OpenAI 的 structured outputs 不能划等号——
+先查当前文档确认支持到哪一步，不够严格就自己加一层校验兜底（校验失败则重试一次）。
 **这是 Java 接入 LLM 的关键点**：强类型语言最怕"有时候返回的不是 JSON"，别在 prompt 里跪求。
 
-**错误处理**：按最具体优先写 catch 链：
-`NotFoundException` → `RateLimitException` → `AnthropicServiceException` → 连接异常。**不要一把 `catch (Exception)`**。
-⚠️ SDK 自带重试（默认 2 次），**总耗时 = 超时 × (重试次数 + 1)**，超时配置要按这个算。Java SDK 对流式请求会自动放大默认超时，非流式是 30s~10min 区间。
+**错误处理**：用 `RestClient` 的 `.onStatus(...)` 按状态码分类：401 鉴权、429 限流、400 参数、5xx 上游。
+**不要一把 `catch (Exception)`**，那样线上排查等于瞎猜。
+
+⚠️ **`RestClient` 没有内置重试**——这正是 #06 的功课。自己写退避时记住：
+**总耗时 = 超时 × (重试次数 + 1)**，只调小超时而不管重试次数，并不会让请求更快失败。
+
+⚠️ **JDK 的 `HttpClient` 默认走 HTTP/2**。走 https 没问题，但明文 http 下会尝试 h2c 升级，
+本地 mock、Ollama、部分自建网关读不懂，报莫名其妙的 `header parser received no bytes`。
+固定 `HttpClient.Version.HTTP_1_1` 最省心。
 
 ---
 
@@ -115,28 +123,27 @@ response.content().stream()
 
 ```java
 for (int turn = 0; turn < maxTurns; turn++) {
-    Message resp = client.messages().create(params);
-    messages.add(resp.toParam());
+    var resp = llmClient.complete(messages, tools);
+    var choice = resp.choices().get(0);
+    messages.add(choice.message());                       // assistant 消息（含 tool_calls）
 
-    if (resp.stopReason() != StopReason.TOOL_USE) break;
+    if (!"tool_calls".equals(choice.finishReason())) break;
 
-    List<ContentBlockParam> results = new ArrayList<>();
-    for (ContentBlock block : resp.content()) {
-        block.toolUse().ifPresent(tu -> {
-            // 执行工具，失败时 isError = true 回传，不要抛异常中断循环
-            results.add(toToolResult(tu, execute(tu)));
-        });
+    // ⚠️ OpenAI 兼容协议里，每个 tool_call 对应一条独立的 role=tool 消息，
+    //    且必须带上对应的 tool_call_id。看别家文档时注意：不同厂商的协议在这里不一样
+    for (var call : choice.message().toolCalls()) {
+        String result = execute(call);                    // 失败也要回传，别抛异常中断循环
+        messages.add(ChatMessage.tool(call.id(), result));
     }
-    // ⚠️ 所有 tool_result 放在同一条 user 消息里
-    messages.add(MessageParam.builder().role(USER).content(results).build());
 }
 ```
 
 **并行工具调用**：`CompletableFuture` + 自定义线程池，`allOf().join()` 后按原顺序组装结果。
 比起 Go 的 `errgroup` 会啰嗦一些，但配合 Spring 的线程池管理和 `@Async` 也够用。
 
-**工具定义**：`Tool` + `Tool.InputSchema`，用 `.strict(true)` + `additionalProperties: false`。
-Java 需要**手写 JSON Schema**（Go 可以从 struct tag 自动生成），可以考虑用 `victools/jsonschema-generator` 从 DTO 类生成，省掉手写。
+**工具定义**：OpenAI 兼容格式的 `tools` 数组，每个工具是 `{type:"function", function:{name, description, parameters}}`，
+`parameters` 就是一份 JSON Schema。
+Java 手写 schema 很啰嗦，可以用 `victools/jsonschema-generator` 从 DTO 类生成。
 
 **护栏**：
 - 轮数上限、会话超时用 Spring 的 `@Timed` / 自己计时
@@ -177,11 +184,13 @@ Java 侧的优势区，你的经验直接迁移：
 
 | 症状 | 大概率原因 |
 |---|---|
-| 编译报找不到 `MessageCreateParams` 的某个方法 | import 错了包：`messages` 和 `beta.messages` 两个包都有同名类 |
+| 响应反序列化报 unknown field | 没加 `@JsonIgnoreProperties(ignoreUnknown = true)`，厂商加字段就炸 |
+| 请求报 400 但参数看着没问题 | 发了 `null` 字段过去。请求 DTO 要加 `@JsonInclude(NON_NULL)` |
+| 本地 mock / Ollama 调不通，报 header parser 错误 | JDK HttpClient 默认 HTTP/2，明文下 h2c 升级失败。固定 HTTP/1.1 |
 | 客户端断开后 token 还在涨 | `SseEmitter` 的 `onCompletion` / `onTimeout` 没注册，上游流没关 |
-| 偶发超时，但单次请求明明不慢 | SDK 自带重试，总耗时 = 超时 × (重试数+1)。超时和重试要一起配 |
+| 偶发超时，但单次请求明明不慢 | 自写的重试叠加了超时：总耗时 = 超时 × (重试数+1)。两者要一起配 |
 | 并行任务把服务拖垮 | 用了 `ForkJoinPool.commonPool()`。配独立线程池 |
 | 异步链路里 traceId 丢了 | MDC 没跨线程传递，要配 `TaskDecorator` |
 | Batch API 结果对不上 | 按位置取结果了。必须用 `custom_id` 关联 |
-| 结构化输出偶尔反序列化失败 | 没开 `strict`，或 schema 里缺 `required` / `additionalProperties: false` |
+| 结构化输出偶尔反序列化失败 | `response_format` 没生效，或该服务的 JSON 模式本就不保证严格符合 schema——加一层校验兜底 |
 | 大文档 embedding 报错或效果差 | 超过模型最大输入长度被静默截断 |

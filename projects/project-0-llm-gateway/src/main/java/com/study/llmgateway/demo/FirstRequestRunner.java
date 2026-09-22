@@ -1,9 +1,9 @@
 package com.study.llmgateway.demo;
 
-import com.anthropic.client.AnthropicClient;
-import com.anthropic.models.messages.Message;
-import com.anthropic.models.messages.MessageCreateParams;
-import com.study.llmgateway.config.LlmProperties;
+import com.study.llmgateway.llm.LlmClient;
+import com.study.llmgateway.llm.dto.ChatCompletionResponse;
+import com.study.llmgateway.llm.dto.ChatMessage;
+import com.study.llmgateway.llm.dto.Usage;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.ApplicationArguments;
@@ -11,10 +11,12 @@ import org.springframework.boot.ApplicationRunner;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
+import java.util.List;
+
 /**
- * 任务 #01：发出第一个请求，打印返回文本和 usage。
+ * 任务 #01：发出第一个请求，打印回复、finish_reason 和 token 用量。
  *
- * <p>⚠️ <b>默认不启用</b>，因为每次启动都发请求 = 每次启动都花钱。
+ * <p>⚠️ <b>默认不启用</b>——每次启动都发请求 = 每次启动都花钱。
  * 需要时显式打开：{@code --app.demo.first-request=true}
  */
 @Component
@@ -23,34 +25,28 @@ public class FirstRequestRunner implements ApplicationRunner {
 
     private static final Logger log = LoggerFactory.getLogger(FirstRequestRunner.class);
 
-    private final AnthropicClient client;
-    private final LlmProperties properties;
+    private final LlmClient llmClient;
 
-    public FirstRequestRunner(AnthropicClient client, LlmProperties properties) {
-        this.client = client;
-        this.properties = properties;
+    public FirstRequestRunner(LlmClient llmClient) {
+        this.llmClient = llmClient;
     }
 
     @Override
     public void run(ApplicationArguments args) {
-        MessageCreateParams params = MessageCreateParams.builder()
-                .model(properties.getModel())
-                .maxTokens(1024L)
-                .addUserMessage("用一句话解释什么是 RAG。")
-                .build();
+        ChatCompletionResponse response = llmClient.complete(List.of(
+                ChatMessage.user("用一句话解释什么是 RAG。")));
 
-        Message response = client.messages().create(params);
+        log.info("[#01] 回复: {}", response.firstText().orElse("(空)"));
+        log.info("[#01] finishReason={}", response.finishReason());
 
-        response.content().stream()
-                .flatMap(block -> block.text().stream())
-                .forEach(text -> log.info("[#01] 回复: {}", text.text()));
+        Usage usage = response.usage();
+        if (usage != null) {
+            log.info("[#01] promptTokens={} completionTokens={} cacheHit={} cacheMiss={}",
+                    usage.promptTokens(), usage.completionTokens(),
+                    usage.cacheHitTokensOrZero(), usage.cacheMissTokensOrZero());
+        }
 
-        var usage = response.usage();
-        log.info("[#01] stopReason={} inputTokens={} outputTokens={}",
-                response.stopReason().map(Object::toString).orElse("null"),
-                usage.inputTokens(),
-                usage.outputTokens());
-
-        // 自检：能不能解释清楚这几个数字分别是什么？答不上来就回去看 stage-1 任务卡。
+        // 自检：这几个数字分别是什么意思？finish_reason 除了 stop 还可能是什么？
+        // 答不上来就回去看 stage-1 任务卡。
     }
 }

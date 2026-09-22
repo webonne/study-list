@@ -15,11 +15,10 @@
     <artifactId>llm-gateway</artifactId>
     <version>0.0.1-SNAPSHOT</version>
     <name>llm-gateway</name>
-    <description>Project 0 · LLM 网关服务（学习计划 #01-#07）</description>
+    <description>Project 0 · LLM 网关服务（学习计划 #01-#07）· DeepSeek / OpenAI 兼容接口</description>
 
     <properties>
         <java.version>21</java.version>
-        <anthropic.sdk.version>2.34.0</anthropic.sdk.version>
     </properties>
 
     <dependencies>
@@ -38,12 +37,6 @@
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-actuator</artifactId>
-        </dependency>
-
-        <dependency>
-            <groupId>com.anthropic</groupId>
-            <artifactId>anthropic-java</artifactId>
-            <version>${anthropic.sdk.version}</version>
         </dependency>
 
         <dependency>
