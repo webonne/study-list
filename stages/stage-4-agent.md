@@ -8,6 +8,8 @@
 | **产出** | `projects/project-2-devops-agent/` |
 | **一句话目标** | 理解 Agent 的本质就是"带工具的循环"，并做出可控、可观测、可回滚的 Agent |
 
+> **语言实现**：本卡是语言无关的。具体用什么库、怎么写、会踩什么坑，见 [Java 轨道](../tracks/java.md) · [Go 轨道](../tracks/go.md)。双语分配策略见 [tracks/README.md](../tracks/README.md)。
+
 > **本质拆解**：Agent 没有魔法，就是这个循环——
 > ```
 > 1. 请求里声明工具（name + description + JSON Schema）
@@ -41,7 +43,7 @@
 **工具定义就是接口文档，写不好模型就选错。** 这是 Agent 效果的头号影响因素，比换模型有用得多。
 
 ### T4.3 并行调用与错误处理（4h）
-- [ ] 一条 assistant 消息里可能有**多个** `tool_use` 块 → 并发执行（线程池/CompletableFuture）
+- [ ] 一条 assistant 消息里可能有**多个** `tool_use` 块 → 并发执行（Java：`CompletableFuture` + 独立线程池；Go：`errgroup`）
 - [ ] ⚠️ 所有 `tool_result` 必须放在**同一条** user 消息里返回。**拆成多条会让模型以后不再并行调用**
 - [ ] 工具失败时返回 `tool_result` + `is_error: true`，**不要直接抛异常中断循环**——给模型重试或换路径的机会
 - [ ] 测试：故意让一个工具失败，观察 Agent 是否能恢复
@@ -73,7 +75,8 @@ Agent 跑十几轮后上下文会爆炸。三种手段，理解它们的区别�
 ### T4.6 MCP Server（5h）
 - [ ] 理解 MCP 是什么：把"工具/数据源"标准化成 Server，**任何支持 MCP 的客户端都能即插即用**。相当于 AI 世界的微服务契约
 - [ ] 先用现成的 MCP Server（文件系统、GitHub、数据库）体验一遍
-- [ ] 用 Java MCP SDK（Spring AI 已集成）**自己写一个**，封装一个内部系统（比如工单查询、发布记录查询）
+- [ ] **自己写一个**，封装一个内部系统（工单查询、发布记录查询等）。
+      ⚠️ **推荐用 Go 写**：编译成单二进制，交付给团队不需要装任何运行时——这是 MCP Server 最省事的形态
 - [ ] 验证：同一个 Server 被**两个不同客户端**成功调用（比如你的 Agent + Claude Code）
 - [ ] 注意：在 Messages API 里用 MCP connector 时，`mcp_servers` 和 `tools` 里的 `mcp_toolset` **两半都要写**，只写一半会报参数校验错误
 

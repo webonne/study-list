@@ -4,9 +4,11 @@
 |---|---|
 | **周次** | 第 1~2 周 |
 | **预计工时** | 20 小时 |
-| **前置** | 无。Java 17+ / Spring Boot 3 / 一个可用的 API Key |
-| **产出** | `projects/project-0-llm-gateway/` |
+| **前置** | 无。一个可用的 API Key + 你选的语言环境（Java 17+ / Go 1.22+） |
+| **产出** | `projects/project-0-llm-gateway/`（建议 **Java 和 Go 各做一遍**，见轨道文档） |
 | **一句话目标** | 像调用一个"不确定的 RPC 接口"一样调用大模型，并理解它的计费、限流和失败模式 |
+
+> **语言实现**：本卡是语言无关的。具体用什么库、怎么写、会踩什么坑，见 [Java 轨道](../tracks/java.md) · [Go 轨道](../tracks/go.md)。双语分配策略见 [tracks/README.md](../tracks/README.md)。
 
 > **心态提示**：这个阶段最反直觉的地方是——**同样的输入，输出可能不一样**。你过去五年的所有工程直觉都建立在确定性之上。先接受这一点，后面的评估、护栏、降级设计才讲得通。
 
@@ -15,8 +17,8 @@
 ## 任务清单
 
 ### T1.1 环境与第一个请求（2h）
-- [ ] 引入官方 Java SDK：`com.anthropic:anthropic-java`
-- [ ] API Key 用环境变量 `ANTHROPIC_API_KEY`，**不要提交进仓库**（配 `.gitignore` + 用 `AnthropicOkHttpClient.fromEnv()`）
+- [ ] 引入官方 SDK（Java：`com.anthropic:anthropic-java`；Go：`github.com/anthropics/anthropic-sdk-go`）
+- [ ] API Key 用环境变量 `ANTHROPIC_API_KEY`，**不要提交进仓库**（配 `.gitignore`，SDK 默认会读这个变量）
 - [ ] 发出第一个请求，打印返回文本和 `usage`
 
 **产出**：一个能跑的 main 方法。
@@ -31,18 +33,19 @@
 
 ### T1.3 流式输出（3h）
 - [ ] 用 SDK 的 streaming API（`StreamResponse`）
-- [ ] Spring 侧用 SSE（`SseEmitter` 或 WebFlux `Flux<ServerSentEvent>`）暴露出去
+- [ ] 用 SSE 暴露给客户端（Java：`SseEmitter` / WebFlux；Go：`http.Flusher`）
 - [ ] 处理流中断：客户端断开时要关掉上游流，否则白烧 token
+      （Go 靠 `ctx` 自动级联取消；Java 要手动注册回调——**这是两种语言差异最明显的地方之一，值得对照着写**）
 - [ ] 测量首字延迟（TTFT）和总时长
 
 **为什么必须做**：长输出用非流式容易撞 HTTP 超时；而且首字延迟从 8s 降到 0.8s，用户体验是两个产品。
 
 ### T1.4 结构化输出（3h）
 - [ ] 用 structured outputs（`output_config.format`）或工具的 `strict: true` 拿到**保证合法**的 JSON
-- [ ] 反序列化成强类型 DTO（Jackson）
+- [ ] 反序列化成强类型对象（Java：Jackson → DTO；Go：`encoding/json` → struct）
 - [ ] 对比实验：用"请只返回 JSON"的 prompt 跑 50 次，统计失败率；再用结构化输出跑 50 次
 
-**这是 Java 接入 LLM 的关键点**：强类型语言最怕"有时候返回的不是 JSON"。别在 prompt 里跪求，用 API 能力解决。
+**这是强类型语言接入 LLM 的关键点**：Java 和 Go 都最怕"有时候返回的不是 JSON"。别在 prompt 里跪求，用 API 能力解决。
 
 ### T1.5 Prompt Caching（3h）
 - [ ] 理解渲染顺序：`tools` → `system` → `messages`，**前缀匹配**，前缀里一个字节变了后面全失效
@@ -62,7 +65,7 @@
 ### T1.7 计量与成本（3h）
 - [ ] 每次调用记录：input / output / cache read / cache write 四类 token
 - [ ] 用 `count_tokens` 接口预估长输入的 token 数（**不要用字符数除以 N 估算，中文尤其不准**）
-- [ ] 接 Micrometer，暴露 token 和耗时指标
+- [ ] 暴露 token 和耗时指标（Java：Micrometer；Go：`log/slog` + Prometheus client）
 - [ ] 手算一次：一天 1 万次调用、平均输入 2000 token、输出 500 token，一个月多少钱
 
 ---

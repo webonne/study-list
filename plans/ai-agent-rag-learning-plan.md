@@ -1,8 +1,9 @@
-# AI Agent / RAG 学习计划（面向 5 年经验 Java 工程师）
+# AI Agent / RAG 学习计划（面向 5 年经验后端工程师 · Java + Go 双轨）
 
-> 目标读者：有 5 年 Java 后端经验（Spring Boot / 微服务 / MySQL / Redis / MQ 熟练），零或少量 AI 经验。
+> 目标读者：有 5 年 Java 后端经验（Spring Boot / 微服务 / MySQL / Redis / MQ 熟练），手上也有 Go 项目但还不太熟，零或少量 AI 经验。
 > 总周期：**14 周**，每周投入 **8~12 小时**（工作日 1h + 周末 4h 左右）。
 > 产出导向：每个阶段都有可运行的代码产物，最终沉淀 3 个可以写进简历、可以对外演示的项目。
+> 附带收益：在做 AI 应用的过程中把 Go 吃透，而不是先花两周刷语法。
 
 ---
 
@@ -28,26 +29,38 @@
 
 ---
 
-## 1. 技术选型：Java 还是 Python？
+## 1. 语言与技术选型
 
-**结论：主 Java，辅 Python。**
+**结论：Java 主力，Go 补位，Python 会读。**
 
-- **业务落地用 Java**：Spring AI / LangChain4j 已经足够成熟，能直接融进你现有的 Spring Boot 体系（事务、连接池、监控、鉴权、灰度全都复用）。
-- **学 Python 到"能读能改"即可**（约 2~3 天）：新论文的复现、评估脚本、数据清洗、embedding 微调这些先在 Python 生态出现。不需要成为 Python 工程师，需要能看懂 LangChain/LlamaIndex 的示例然后翻译成 Java。
-
-### 1.1 Java 侧技术栈
-
-| 层 | 选型 | 说明 |
+| 语言 | 定位 | 投入 |
 |---|---|---|
-| 大模型 SDK | **官方 Anthropic Java SDK**：`com.anthropic:anthropic-java`（Maven `<groupId>com.anthropic</groupId>`） | 直连 API，功能最全、更新最快。tool use / streaming / 缓存 / 结构化输出都有一等支持 |
-| 应用框架 | **Spring AI** 或 **LangChain4j**（二选一，建议 Spring AI） | Spring AI 与 Spring Boot 集成度最好（自动配置、`ChatClient`、`VectorStore` 抽象、Advisor 链）；LangChain4j 抽象更贴近 LangChain，社区示例多 |
-| 向量存储 | 入门 **pgvector**（PostgreSQL 插件）；已有 ES 就用 **Elasticsearch / OpenSearch** 的 dense_vector + BM25 混合检索；规模大再上 **Milvus / Qdrant** | 不要一上来就引专用向量库。pgvector 一个库解决元数据过滤 + 向量检索 + 事务，运维成本最低 |
-| 关键词检索 | Elasticsearch BM25 / PostgreSQL 全文检索 | 混合检索必备，纯向量检索在专有名词、编号、代码上会翻车 |
-| Embedding | 需要外部服务或本地模型：商用可用 Voyage / Cohere / 阿里云百炼 / 智谱；本地可用 **bge-m3**、**BGE-large-zh**（中文效果好，可用 ONNX Runtime 或独立 Python 服务暴露 HTTP） | 注意：Anthropic 不提供 embedding 接口，embedding 要单独选型 |
-| Rerank | bge-reranker-v2-m3（本地）或 Cohere Rerank（云） | 性价比最高的单点提升，务必做 |
-| 文档解析 | Apache Tika、PDFBox、`docx4j`；复杂 PDF 用版面解析服务（MinerU / 商用 OCR） | PDF 解析质量是 RAG 的头号脏活 |
-| 可观测 | Langfuse（开源，有 Java SDK/OpenTelemetry 接入）或 自建 + Micrometer | 记录每次调用的 prompt / token / 耗时 / 命中的文档 |
-| 评估 | 自写评估脚本（Java 或 Python 都行）+ LLM-as-judge | 见第 3 阶段 |
+| **Java** | 主力。业务落地、离线数据处理（解析/切块/embedding/入库）、能进 CI 的 eval | 全程 |
+| **Go** | 补位。**Agent 运行时、MCP Server、高并发在线服务**——这几块 Go 明显更合适（单二进制交付、goroutine 并行、context 级联取消） | 阶段一 + 阶段四为主 |
+| **Python** | 只需"能读能改"（约 2~3 天） | 按需 |
+
+**为什么 Java 做主力**：Spring AI / LangChain4j 已经足够成熟，能直接融进现有 Spring Boot 体系——事务、连接池、监控、鉴权、灰度全都复用，同事也接得住。
+
+**为什么值得搭一条 Go 线**：不是"Go 也能做"，而是**有些活 Go 确实更合适**。MCP Server 编译成一个二进制扔给团队就能跑，不用装 JRE；Agent 的并行工具调用用 `errgroup` 几行搞定；用户关掉页面，`context` 一取消整条链路（LLM 流、检索、rerank）自动停，直接省 token——这几件事在 Java 里都要绕一圈。
+
+**为什么 Python 只需要读懂**：新方法先在 Python 生态出现（论文复现、embedding 微调、数据清洗）。你需要的是"看懂示例然后翻译过来"，不是成为 Python 工程师。
+
+> ⚠️ **不要把 14 周的内容用两种语言各做一遍。** 时间翻倍，收获远不到两倍——RAG 和 Agent 的难点 80% 与语言无关。
+> 按语言优势分配阶段的具体方案见 **[tracks/README.md](../tracks/README.md)**。
+
+### 1.1 技术栈详情
+
+各语言的完整选型表、SDK 用法、各阶段实现要点和坑，见语言轨道文档：
+
+- **[Java 轨道](../tracks/java.md)** — Spring AI / pgvector / Tika / Micrometer，以及 Java 特有的坑（包命名空间、SSE 断连、MDC 跨线程丢失、Batch 乱序）
+- **[Go 轨道](../tracks/go.md)** — 官方 Go SDK / errgroup / pprof，含**面向 Java 工程师的 Go 速成**（错误即值、context、接口隐式实现、typed nil 陷阱等）
+
+两条轨道共用的判断：
+- **向量库从 pgvector 起步**，不要一上来就引专用向量库。一个库解决元数据过滤 + 向量检索 + 事务，运维成本最低。
+- **Embedding 要单独选型**（Anthropic 不提供 embedding 接口）。中文场景优先 bge-m3 / BGE-zh 系列。
+- **Embedding 和 rerank 的本地推理、文档解析，交给 Python/Java 服务**，Go 调 HTTP。Go 在这一层生态确实薄，硬写是浪费时间。
+- **Rerank 必做**，是性价比最高的单点提升。
+
 
 ### 1.2 关于模型选择（以 Claude 为例）
 
@@ -392,3 +405,4 @@ Agent 跑十几轮之后，上下文会爆炸。三种应对手段：
 6. **忽视 chunk 和解析质量**——垃圾进垃圾出，再强的模型也救不了切烂的文档。
 7. **追框架不追原理**——框架半年换一茬，"检索—重排—上下文组装—评估"的方法论是稳定的。
 8. **完全相信 AI 生成的 API 用法**——模型对自己最新的 API 也可能记错，一律以官方文档为准。
+9. **为了"用上 Go"而用 Go**——文档解析、embedding 推理这类活 Go 生态确实薄，硬写会耗在无关的地方。按职责切分服务（Go 做在线编排，Python/Java 做离线数据），这本来就是更好的架构。
