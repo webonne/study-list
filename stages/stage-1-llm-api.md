@@ -2,8 +2,9 @@
 
 | | |
 |---|---|
-| **周次** | 第 1~2 周 |
-| **预计工时** | 20 小时 |
+| **执行序号** | **#01–#07（Java）+ #08–#12（Go）** — 顺序与优先级见 [ROADMAP.md](../ROADMAP.md) |
+| **周次** | 第 1~3 周（按每周 10 小时估算） |
+| **预计工时** | 20h + 12h |
 | **前置** | 无。一个可用的 API Key + 你选的语言环境（Java 17+ / Go 1.22+） |
 | **产出** | `projects/project-0-llm-gateway/`（建议 **Java 和 Go 各做一遍**，见轨道文档） |
 | **一句话目标** | 像调用一个"不确定的 RPC 接口"一样调用大模型，并理解它的计费、限流和失败模式 |
@@ -16,14 +17,14 @@
 
 ## 任务清单
 
-### T1.1 环境与第一个请求（2h）
+### #01 · T1.1 环境与第一个请求（2h）
 - [ ] 引入官方 SDK（Java：`com.anthropic:anthropic-java`；Go：`github.com/anthropics/anthropic-sdk-go`）
 - [ ] API Key 用环境变量 `ANTHROPIC_API_KEY`，**不要提交进仓库**（配 `.gitignore`，SDK 默认会读这个变量）
 - [ ] 发出第一个请求，打印返回文本和 `usage`
 
 **产出**：一个能跑的 main 方法。
 
-### T1.2 多轮对话（3h）
+### #02 · T1.2 多轮对话（3h）
 - [ ] 理解：**服务端不存历史**，每轮都要把完整 `messages` 数组发回去
 - [ ] 把 assistant 的回复也追加进历史（漏掉这步是新手第一号 bug）
 - [ ] 历史存 Redis，按 sessionId 隔离，设 TTL
@@ -31,7 +32,7 @@
 
 **产出**：`/chat` 接口，支持多轮。
 
-### T1.3 流式输出（3h）
+### #03 · T1.3 流式输出（3h）
 - [ ] 用 SDK 的 streaming API（`StreamResponse`）
 - [ ] 用 SSE 暴露给客户端（Java：`SseEmitter` / WebFlux；Go：`http.Flusher`）
 - [ ] 处理流中断：客户端断开时要关掉上游流，否则白烧 token
@@ -40,14 +41,14 @@
 
 **为什么必须做**：长输出用非流式容易撞 HTTP 超时；而且首字延迟从 8s 降到 0.8s，用户体验是两个产品。
 
-### T1.4 结构化输出（3h）
+### #04 · T1.4 结构化输出（3h）
 - [ ] 用 structured outputs（`output_config.format`）或工具的 `strict: true` 拿到**保证合法**的 JSON
 - [ ] 反序列化成强类型对象（Java：Jackson → DTO；Go：`encoding/json` → struct）
 - [ ] 对比实验：用"请只返回 JSON"的 prompt 跑 50 次，统计失败率；再用结构化输出跑 50 次
 
 **这是强类型语言接入 LLM 的关键点**：Java 和 Go 都最怕"有时候返回的不是 JSON"。别在 prompt 里跪求，用 API 能力解决。
 
-### T1.5 Prompt Caching（3h）
+### #05 · T1.5 Prompt Caching（3h）
 - [ ] 理解渲染顺序：`tools` → `system` → `messages`，**前缀匹配**，前缀里一个字节变了后面全失效
 - [ ] 把稳定内容（系统提示、工具定义、长知识片段）放前面并打缓存断点
 - [ ] 把易变内容（时间戳、requestId、用户问题）放到断点之后
@@ -56,13 +57,13 @@
 
 最后这个实验必须亲手做一遍。这是线上缓存命中率突然掉到 0 的最常见原因，踩过一次就永远记得。
 
-### T1.6 错误处理与重试（3h）
+### #06 · T1.6 错误处理与重试（3h）
 - [ ] 分清可重试（429 / 5xx / 网络超时）和不可重试（400 / 404）
 - [ ] 按"最具体优先"写 catch 链：`NotFoundException` → `RateLimitException` → `AnthropicServiceException` → 连接异常。**不要一把 `catch (Exception)`**
 - [ ] 429 读 `retry-after`，指数退避
 - [ ] 注意：SDK 自带重试（默认 2 次），总耗时 = 超时 × (重试次数 + 1)，超时配置要按这个算
 
-### T1.7 计量与成本（3h）
+### #07 · T1.7 计量与成本（3h）
 - [ ] 每次调用记录：input / output / cache read / cache write 四类 token
 - [ ] 用 `count_tokens` 接口预估长输入的 token 数（**不要用字符数除以 N 估算，中文尤其不准**）
 - [ ] 暴露 token 和耗时指标（Java：Micrometer；Go：`log/slog` + Prometheus client）
