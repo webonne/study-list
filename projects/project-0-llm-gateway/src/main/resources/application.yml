@@ -1,5 +1,5 @@
 server:
-  port: 8080
+  port: 8090
 
 spring:
   application:
@@ -16,6 +16,12 @@ app:
     store: memory
 
   llm:
+    # 只读 LLM_GATEWAY_API_KEY，不用 ANTHROPIC_API_KEY。密钥不要写进这个文件。
+    api-key: ${LLM_GATEWAY_API_KEY:}
+    # bearer：Authorization: Bearer（Packy 等中转站）；api-key：x-api-key（官方 API）
+    auth: bearer
+    # 官方地址。换成自建代理时只改主机，不要带 /v1
+    base-url: https://cf.api.fan
     model: claude-opus-5
     max-tokens: 16000
     system-prompt: "你是一个简洁、准确的助手。回答用中文。"

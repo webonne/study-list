@@ -10,9 +10,13 @@
 ## 快速开始
 
 ```bash
-export ANTHROPIC_API_KEY=sk-ant-...        # 唯一必需的环境变量，别写进配置文件
+export LLM_GATEWAY_API_KEY=sk-ant-...      # 本项目专用，不用 ANTHROPIC_API_KEY
 mvn spring-boot:run
 ```
+
+密钥由 `application.yml` 的 `app.llm.api-key: ${LLM_GATEWAY_API_KEY:}` 注入，不读本机的 `ANTHROPIC_API_KEY`。不要把 key 明文写进配置文件。`app.llm.auth` 决定放进哪个头：`bearer` 是 `Authorization: Bearer`（Packy 等中转站），`api-key` 是 `x-api-key`（官方 API）。
+
+API 域名在 `app.llm.base-url`，默认 `https://api.anthropic.com`。换成自建代理时只改主机，不要带 `/v1`。
 
 默认用**内存**存对话历史，不需要装 Redis，第一天就能跑起来。
 
@@ -60,7 +64,7 @@ management:
 
 ```
 config/
-  LlmProperties          模型、maxTokens、系统提示、历史长度、TTL
+  LlmProperties          模型、baseUrl、maxTokens、系统提示、历史长度、TTL
   AnthropicClientConfig  SDK 客户端 Bean（超时 + 重试）
 chat/
   ChatController         POST /chat、DELETE /chat/{sessionId}

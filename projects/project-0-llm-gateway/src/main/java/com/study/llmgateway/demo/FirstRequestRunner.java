@@ -18,7 +18,7 @@ import org.springframework.stereotype.Component;
  * 需要时显式打开：{@code --app.demo.first-request=true}
  */
 @Component
-@ConditionalOnProperty(name = "app.demo.first-request", havingValue = "true")
+    @ConditionalOnProperty(name = "app.demo.first-request", havingValue = "true")
 public class FirstRequestRunner implements ApplicationRunner {
 
     private static final Logger log = LoggerFactory.getLogger(FirstRequestRunner.class);
