@@ -63,7 +63,7 @@
 
 | 项目 | 阶段 | 状态 | 代码 |
 |---|---|---|---|
-| Project 0 · LLM 网关服务（Java） | 一 | ⬜ | `projects/project-0-llm-gateway/` |
+| Project 0 · LLM 网关服务（Java） | 一 | 🟡 骨架就绪（#01 #02 可跑） | `projects/project-0-llm-gateway/` |
 | Project 0 · LLM 网关服务（Go） | 一 | ⬜ | `projects/project-0-llm-gateway-go/` |
 | Project 1 · 企业知识库问答 | 二~三 | ⬜ | `projects/project-1-knowledge-qa/` |
 | Project 2 · 研发运维助手 Agent（**Go 主力**） | 四~五 | ⬜ | `projects/project-2-devops-agent/` |

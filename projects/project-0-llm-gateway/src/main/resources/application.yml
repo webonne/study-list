@@ -1,0 +1,42 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: llm-gateway
+  # 只有 app.conversation.store=redis 时才真正用到
+  data:
+    redis:
+      host: localhost
+      port: 6379
+
+app:
+  # memory（默认，免装 Redis）| redis
+  conversation:
+    store: memory
+
+  llm:
+    model: claude-opus-5
+    max-tokens: 16000
+    system-prompt: "你是一个简洁、准确的助手。回答用中文。"
+    max-history-messages: 20
+    session-ttl-seconds: 3600
+
+  demo:
+    # #01 首个请求演示，默认关闭——开启后每次启动都会真实调用一次 API（花钱）
+    first-request: false
+
+logging:
+  level:
+    com.study.llmgateway: INFO
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,metrics
+  health:
+    redis:
+      # 引了 redis starter 后，健康检查默认会去连 Redis，没装 Redis 时 /actuator/health 直接 DOWN。
+      # 默认存储是内存实现，所以这里关掉；切到 app.conversation.store=redis 时记得改成 true。
+      enabled: false

@@ -4,7 +4,7 @@
 
 | 目录 | 项目 | 对应阶段 | 核心卖点 |
 |---|---|---|---|
-| `project-0-llm-gateway/` | LLM 网关服务 | 一 | 流式、结构化输出、prompt caching、重试与计量 |
+| [`project-0-llm-gateway/`](project-0-llm-gateway/) | LLM 网关服务 | 一 | 流式、结构化输出、prompt caching、重试与计量。**#01 #02 骨架已就绪，可直接跑** |
 | `project-1-knowledge-qa/` | 企业知识库问答 | 二~三 | 混合检索 + rerank + 引用 + **完整 eval 体系与对比数据** |
 | `project-2-devops-agent/` | 研发/运维助手 Agent | 四~五 | 手写 tool use 循环、MCP Server、成本与安全护栏 |
 
