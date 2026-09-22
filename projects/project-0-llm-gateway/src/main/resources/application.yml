@@ -1,5 +1,6 @@
 server:
-  port: 8080
+  # 8090 而不是 8080，避开本机常见端口冲突
+  port: 8090
 
 spring:
   application:
@@ -15,13 +16,21 @@ app:
     store: memory
 
   llm:
-    # OpenAI 兼容接口。换成通义 / Kimi / 本地 vLLM、Ollama 只需改这两行
+    # 只读 LLM_GATEWAY_API_KEY，不用厂商专用变量名——避免和本机其他工具撞名。
+    # 密钥不要写进这个文件。
+    api-key: ${LLM_GATEWAY_API_KEY:}
+    # bearer：Authorization: Bearer（OpenAI 兼容接口都用这个）
+    # api-key：x-api-key（少数网关/中转站用这个头）
+    auth: bearer
+
+    # OpenAI 兼容接口。换通义 / Kimi / 本地 vLLM、Ollama、或自建中转站，只改这两行。
+    # 注意：不要带 /v1，路径由代码拼（本项目拼的是 /chat/completions）。
     base-url: https://api.deepseek.com
-    api-key: ${DEEPSEEK_API_KEY:}
     # ⚠️ 模型名会变，以 DeepSeek 官方文档当前版本为准。
     #    旧别名 deepseek-chat / deepseek-reasoner 已于 2026-07-24 下线。
     #    便宜档位可换 deepseek-v4-flash。
     model: deepseek-v4-pro
+
     max-tokens: 4096
     system-prompt: "你是一个简洁、准确的助手。回答用中文。"
     max-history-messages: 20

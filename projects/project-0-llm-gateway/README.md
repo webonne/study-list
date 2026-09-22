@@ -12,9 +12,15 @@
 ## 快速开始
 
 ```bash
-export DEEPSEEK_API_KEY=sk-...        # 唯一必需的环境变量，别写进配置文件
-mvn spring-boot:run
+export LLM_GATEWAY_API_KEY=sk-...     # 项目专用变量名，别写进配置文件
+mvn spring-boot:run                    # 服务起在 8090
 ```
+
+**为什么不用 `DEEPSEEK_API_KEY` 这种厂商变量名**：避免和本机其他工具撞名，
+换供应商时也不用改代码。密钥由 `app.llm.api-key: ${LLM_GATEWAY_API_KEY:}` 注入。
+
+`app.llm.auth` 决定密钥放哪个头：`bearer` → `Authorization: Bearer`（OpenAI 兼容接口都用这个）；
+`api-key` → `x-api-key`（少数网关/中转站用）。
 
 默认用**内存**存对话历史，不需要装 Redis，第一天就能跑起来。
 
@@ -30,14 +36,14 @@ mvn spring-boot:run -Dspring-boot.run.arguments=--app.demo.first-request=true
 ### 跑 #02：多轮对话
 
 ```bash
-curl -X POST localhost:8080/chat -H 'Content-Type: application/json' \
+curl -X POST localhost:8090/chat -H 'Content-Type: application/json' \
   -d '{"sessionId":"s1","message":"Spring 的 @Transactional 默认传播行为是什么？"}'
 
 # 第二轮故意用"它"指代，验证历史真的带上了
-curl -X POST localhost:8080/chat -H 'Content-Type: application/json' \
+curl -X POST localhost:8090/chat -H 'Content-Type: application/json' \
   -d '{"sessionId":"s1","message":"那它有哪些坑？"}'
 
-curl -X DELETE localhost:8080/chat/s1    # 清空会话
+curl -X DELETE localhost:8090/chat/s1    # 清空会话
 ```
 
 **第二轮答得上来 = 历史管理是对的；答非所问 = 你漏存了 assistant 的回复。**
@@ -49,9 +55,13 @@ curl -X DELETE localhost:8080/chat/s1    # 清空会话
 ```yaml
 app:
   llm:
-    base-url: https://api.deepseek.com     # 通义 / Kimi / 本地 vLLM、Ollama 都行
+    base-url: https://api.deepseek.com     # 通义 / Kimi / 本地 vLLM、Ollama、自建中转站都行
     model: deepseek-v4-pro
+    auth: bearer                           # 个别网关要 x-api-key，改成 api-key
 ```
+
+⚠️ **base-url 不要带 `/v1`**——路径由代码拼（本项目拼 `/chat/completions`）。
+如果你的中转站路径前缀是 `/v1`，把 base-url 写成 `https://xxx/v1` 即可。
 
 ⚠️ **模型名会变**。旧别名 `deepseek-chat` / `deepseek-reasoner` 已于 2026-07-24 下线，
 当前是 `deepseek-v4-pro` / `deepseek-v4-flash`（便宜档位）。
@@ -74,7 +84,7 @@ management:
 ## 代码结构
 
 ```
-config/LlmProperties      base-url / api-key / 模型 / maxTokens / 系统提示 / 超时
+config/LlmProperties      base-url / api-key / auth / 模型 / maxTokens / 系统提示 / 超时
 llm/
   LlmClientConfig         RestClient Bean（超时、鉴权头、HTTP 版本）
   LlmClient               POST /chat/completions 的最小封装

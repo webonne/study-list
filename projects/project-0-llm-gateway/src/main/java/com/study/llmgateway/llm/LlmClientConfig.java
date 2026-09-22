@@ -37,11 +37,21 @@ public class LlmClientConfig {
         JdkClientHttpRequestFactory requestFactory = new JdkClientHttpRequestFactory(httpClient);
         requestFactory.setReadTimeout(properties.getReadTimeout());
 
-        return RestClient.builder()
+        RestClient.Builder builder = RestClient.builder()
                 .requestFactory(requestFactory)
                 .baseUrl(properties.getBaseUrl())
-                .defaultHeader(HttpHeaders.AUTHORIZATION, "Bearer " + properties.getApiKey())
-                .defaultHeader(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
-                .build();
+                .defaultHeader(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE);
+
+        // 密钥放哪个头由配置决定：OpenAI 兼容接口用 Bearer，少数网关用 x-api-key。
+        // key 为空也照常启动——发请求时才失败，方便先把服务跑起来看看。
+        String apiKey = properties.getApiKey();
+        if (apiKey != null && !apiKey.isBlank()) {
+            if ("api-key".equalsIgnoreCase(properties.getAuth())) {
+                builder.defaultHeader("x-api-key", apiKey);
+            } else {
+                builder.defaultHeader(HttpHeaders.AUTHORIZATION, "Bearer " + apiKey);
+            }
+        }
+        return builder.build();
     }
 }

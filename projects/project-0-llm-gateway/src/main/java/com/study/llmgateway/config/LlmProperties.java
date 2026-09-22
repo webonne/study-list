@@ -7,8 +7,11 @@ import java.time.Duration;
 /**
  * LLM 相关配置。
  *
- * <p>⚠️ API Key 从环境变量 {@code DEEPSEEK_API_KEY} 注入，
+ * <p>⚠️ API Key 从环境变量 {@code LLM_GATEWAY_API_KEY} 注入，
  * <b>不要写进任何配置文件</b>——那是最常见的泄露方式（配置文件会进 Git）。
+ *
+ * <p>用项目专用的变量名而不是 {@code DEEPSEEK_API_KEY}，是为了避免和本机其他工具的
+ * 同名变量撞车——换供应商时也不用改代码。
  */
 @ConfigurationProperties(prefix = "app.llm")
 public class LlmProperties {
@@ -21,8 +24,21 @@ public class LlmProperties {
      */
     private String baseUrl = "https://api.deepseek.com";
 
-    /** API Key，由 {@code DEEPSEEK_API_KEY} 环境变量注入。 */
+    /**
+     * API Key，由 {@code LLM_GATEWAY_API_KEY} 环境变量注入。
+     * 留空时应用仍能启动，真正发请求时才会失败——方便先把服务跑起来。
+     */
     private String apiKey = "";
+
+    /**
+     * 密钥放进哪个请求头。
+     *
+     * <ul>
+     *   <li>{@code bearer}（默认）：{@code Authorization: Bearer xxx}，OpenAI 兼容接口都用这个</li>
+     *   <li>{@code api-key}：{@code x-api-key: xxx}，少数网关/中转站用这个头</li>
+     * </ul>
+     */
+    private String auth = "bearer";
 
     /**
      * 模型 id。
@@ -76,6 +92,14 @@ public class LlmProperties {
 
     public void setApiKey(String apiKey) {
         this.apiKey = apiKey;
+    }
+
+    public String getAuth() {
+        return auth;
+    }
+
+    public void setAuth(String auth) {
+        this.auth = auth;
     }
 
     public String getModel() {
