@@ -177,6 +177,25 @@ store.append(sessionId, Turn.assistant(reply));   // ← 少了这行，模型�
 
 ---
 
+## 本地复现与自测
+
+`scripts/mock_upstream.py` 模拟 DeepSeek 接口，不花钱、不依赖网络：
+
+```bash
+python3 scripts/mock_upstream.py &                      # 监听 127.0.0.1:9099，日志 /tmp/mock_upstream.log
+java -jar target/llm-gateway-*.jar --app.llm.base-url=http://127.0.0.1:9099
+```
+
+- 非流式：返回带缓存命中字段的 usage
+- 流式：每 0.3s 一段，共 20 段（约 6s）
+- 消息里含 `STALL`：吐 1 段后卡住，用来测超时
+
+日志会记录每个请求上游实际发了几段、是否被提前断开——**"断开后上游有没有停"只能从上游这一侧看到。**
+
+已知问题和复现步骤见 [2026-09-23 代码评审](../../notes/2026-09-23-project0-代码评审.md)。
+
+---
+
 ## 已验证
 
 用一个模拟上游（本地 mock，返回真实形状的 OpenAI 兼容响应）跑通了全链路：
