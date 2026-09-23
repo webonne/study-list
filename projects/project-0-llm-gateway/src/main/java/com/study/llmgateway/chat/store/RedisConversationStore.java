@@ -3,6 +3,8 @@ package com.study.llmgateway.chat.store;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.study.llmgateway.config.LlmProperties;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Primary;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -21,6 +23,8 @@ import java.util.List;
 @Primary
 @ConditionalOnProperty(name = "app.conversation.store", havingValue = "redis")
 public class RedisConversationStore implements ConversationStore {
+
+    private static final Logger log = LoggerFactory.getLogger(RedisConversationStore.class);
 
     private static final String KEY_PREFIX = "chat:session:";
 
@@ -53,14 +57,39 @@ public class RedisConversationStore implements ConversationStore {
     public void append(String sessionId, Turn turn) {
         String key = key(sessionId);
         redis.opsForList().rightPush(key, writeTurn(turn));
-        // 只保留最近 N 条：负数下标从右往左数，-N 到 -1 就是最后 N 条
-        redis.opsForList().trim(key, -properties.getMaxHistoryMessages(), -1);
+        trim(sessionId, key);
         redis.expire(key, properties.getSessionTtl());
     }
 
     @Override
     public void clear(String sessionId) {
         redis.delete(key(sessionId));
+    }
+
+    /**
+     * 只保留最近 N 条，再丢掉开头落单的 assistant，避免从一轮对话中间切开。
+     * {@code max <= 0} 时整段清空。Redis 的 {@code LTRIM key 0 -1} 会保留全部，不能拿来表示 0。
+     */
+    private void trim(String sessionId, String key) {
+        int max = Math.max(properties.getMaxHistoryMessages(), 0);
+        Long size = redis.opsForList().size(key);
+        if (size == null || size <= max) {
+            return;
+        }
+        if (max == 0) {
+            redis.delete(key);
+            log.info("history truncated sessionId={} dropped={} kept={} max={}", sessionId, size, 0, max);
+            return;
+        }
+        redis.opsForList().trim(key, -max, -1);
+        String head = redis.opsForList().index(key, 0);
+        if (head != null && readTurn(head).role() == Turn.Role.ASSISTANT) {
+            redis.opsForList().leftPop(key);
+        }
+        Long kept = redis.opsForList().size(key);
+        long keptCount = kept == null ? 0 : kept;
+        log.info("history truncated sessionId={} dropped={} kept={} max={}",
+                sessionId, size - keptCount, keptCount, max);
     }
 
     private String key(String sessionId) {

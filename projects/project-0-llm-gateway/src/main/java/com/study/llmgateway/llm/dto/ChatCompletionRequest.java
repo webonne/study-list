@@ -22,4 +22,8 @@ public record ChatCompletionRequest(
     public static ChatCompletionRequest of(String model, List<ChatMessage> messages, int maxTokens) {
         return new ChatCompletionRequest(model, messages, maxTokens, null, false);
     }
+
+    public static ChatCompletionRequest streaming(String model, List<ChatMessage> messages, int maxTokens) {
+        return new ChatCompletionRequest(model, messages, maxTokens, null, true);
+    }
 }

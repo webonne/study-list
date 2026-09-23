@@ -61,7 +61,10 @@ public class LlmProperties {
      */
     private String systemPrompt = "你是一个简洁、准确的助手。回答用中文。";
 
-    /** 保留的最大消息条数（一问一答算两条）。超出后丢弃最早的。 */
+    /**
+     * 保留的最大消息条数（一问一答算两条）。
+     * 超出后丢掉最早的完整轮次，不会从一轮中间切开。压缩留到后面再做。
+     */
     private int maxHistoryMessages = 20;
 
     /** 会话过期时间，仅 Redis 实现使用。 */

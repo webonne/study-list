@@ -1,6 +1,8 @@
 package com.study.llmgateway.chat.store;
 
 import com.study.llmgateway.config.LlmProperties;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -17,6 +19,8 @@ import java.util.concurrent.ConcurrentHashMap;
  */
 @Component
 public class InMemoryConversationStore implements ConversationStore {
+
+    private static final Logger log = LoggerFactory.getLogger(InMemoryConversationStore.class);
 
     private final Map<String, List<Turn>> sessions = new ConcurrentHashMap<>();
     private final LlmProperties properties;
@@ -38,7 +42,7 @@ public class InMemoryConversationStore implements ConversationStore {
                     ? Collections.synchronizedList(new ArrayList<>())
                     : existing;
             turns.add(turn);
-            trim(turns);
+            trim(sessionId, turns);
             return turns;
         });
     }
@@ -49,15 +53,18 @@ public class InMemoryConversationStore implements ConversationStore {
     }
 
     /**
-     * 从最早的消息开始丢弃。
-     *
-     * <p>这是最朴素的裁剪策略：省 token，但会让模型"忘记"开头说过的话。
-     * 阶段四（#31 上下文管理）会用 compaction / memory 换掉它。
+     * 超出 {@code app.llm.max-history-messages} 时丢掉最早的完整轮次。
+     * 压缩留到后面，现在直接丢。
      */
-    private void trim(List<Turn> turns) {
-        int max = properties.getMaxHistoryMessages();
-        while (turns.size() > max) {
-            turns.remove(0);
+    private void trim(String sessionId, List<Turn> turns) {
+        int before = turns.size();
+        List<Turn> fitted = HistoryWindow.truncate(turns, properties.getMaxHistoryMessages());
+        if (fitted.size() == before) {
+            return;
         }
+        turns.clear();
+        turns.addAll(fitted);
+        log.info("history truncated sessionId={} dropped={} kept={} max={}",
+                sessionId, before - fitted.size(), fitted.size(), properties.getMaxHistoryMessages());
     }
 }

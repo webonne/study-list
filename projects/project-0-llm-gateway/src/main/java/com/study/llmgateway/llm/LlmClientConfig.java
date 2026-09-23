@@ -1,6 +1,9 @@
 package com.study.llmgateway.llm;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.study.llmgateway.config.LlmProperties;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpHeaders;
@@ -9,6 +12,7 @@ import org.springframework.http.client.JdkClientHttpRequestFactory;
 import org.springframework.web.client.RestClient;
 
 import java.net.http.HttpClient;
+import java.nio.charset.StandardCharsets;
 
 /**
  * 直接用 {@link RestClient} 调 OpenAI 兼容接口，不引第三方 LLM SDK。
@@ -22,8 +26,10 @@ import java.net.http.HttpClient;
 @Configuration
 public class LlmClientConfig {
 
+    private static final Logger log = LoggerFactory.getLogger(LlmClientConfig.class);
+
     @Bean
-    public RestClient llmRestClient(LlmProperties properties) {
+    public RestClient llmRestClient(LlmProperties properties, ObjectMapper objectMapper) {
         HttpClient httpClient = HttpClient.newBuilder()
                 // ⚠️ JDK 的 HttpClient 默认用 HTTP/2。走 https 时靠 ALPN 协商没问题，
                 // 但明文 http 下它会尝试 h2c 升级，很多简单服务端（本地 mock、
@@ -40,7 +46,11 @@ public class LlmClientConfig {
         RestClient.Builder builder = RestClient.builder()
                 .requestFactory(requestFactory)
                 .baseUrl(properties.getBaseUrl())
-                .defaultHeader(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE);
+                .defaultHeader(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
+                .requestInterceptor((request, body, execution) -> {
+                    log.info("llm request {} {}\n{}", request.getMethod(), request.getURI(), prettyJson(objectMapper, body));
+                    return execution.execute(request, body);
+                });
 
         // 密钥放哪个头由配置决定：OpenAI 兼容接口用 Bearer，少数网关用 x-api-key。
         // key 为空也照常启动——发请求时才失败，方便先把服务跑起来看看。
@@ -53,5 +63,18 @@ public class LlmClientConfig {
             }
         }
         return builder.build();
+    }
+
+    /** 打出来的是真正发出去的 JSON，只做了换行，字段和线上一致。不打印鉴权头。 */
+    private static String prettyJson(ObjectMapper objectMapper, byte[] body) {
+        if (body == null || body.length == 0) {
+            return "";
+        }
+        try {
+            return objectMapper.writerWithDefaultPrettyPrinter()
+                    .writeValueAsString(objectMapper.readTree(body));
+        } catch (Exception e) {
+            return new String(body, StandardCharsets.UTF_8);
+        }
     }
 }

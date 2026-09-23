@@ -48,6 +48,17 @@ curl -X DELETE localhost:8090/chat/s1    # 清空会话
 
 **第二轮答得上来 = 历史管理是对的；答非所问 = 你漏存了 assistant 的回复。**
 
+### 跑 #03：流式输出
+
+```bash
+curl -N -X POST localhost:8090/chat/stream -H 'Content-Type: application/json' \
+  -d '{"sessionId":"s1","message":"用三句话解释一下事务的传播行为"}'
+```
+
+`-N` 关掉 curl 的缓冲，字才会一段段出来。事件名 `delta` 是增量文本，`done` 里有 `finishReason`、`ttftMs`（首字延迟）和 `elapsedMs`。关掉 curl 会同时关掉上游流。
+
+历史长度由 `app.llm.max-history-messages` 限制（默认 20，一问一答算两条）。超了会丢掉最早的完整轮次，不会从一轮中间切开。压缩（把丢掉的早期对话总结成一条）还没做。
+
 ### 换别的模型服务
 
 因为走的是 OpenAI 兼容协议，**换供应商只改两行配置**，代码一行不动：
@@ -71,6 +82,8 @@ app:
 
 ```yaml
 app:
+  redis:
+    key-prefix: llm-gateway   # 所有 key 统一加前缀，实际 key 是 llm-gateway:chat:session:{sessionId}
   conversation:
     store: redis
 management:
@@ -85,6 +98,7 @@ management:
 
 ```
 config/LlmProperties      base-url / api-key / auth / 模型 / maxTokens / 系统提示 / 超时
+config/RedisKeyPrefix    所有 Redis key 的统一前缀 app.redis.key-prefix
 llm/
   LlmClientConfig         RestClient Bean（超时、鉴权头、HTTP 版本）
   LlmClient               POST /chat/completions 的最小封装
@@ -153,7 +167,7 @@ store.append(sessionId, Turn.assistant(reply));   // ← 少了这行，模型�
 
 | # | 任务 | 从哪下手 |
 |---|---|---|
-| **03** | 流式输出 | 请求体加 `stream=true`，按 SSE 逐行解析 `data: {...}`，遇 `data: [DONE]` 结束；Controller 侧用 `SseEmitter`。**务必在客户端断开时关掉上游流**，否则还在烧 token |
+| **03** | 流式输出 | 已接到 `POST /chat/stream`：上游 `stream=true`，下游 `SseEmitter`，断开时关上游 |
 | **04** | 结构化输出 | 请求体加 `response_format`。⚠️ DeepSeek 的 JSON 模式和 OpenAI 的严格 schema 能力不完全一样，**先查当前文档确认支持到哪一步**，再决定要不要加一层校验兜底 |
 | **05** | 缓存 | 把稳定内容固定在最前，观测 `cacheHitRatio`。**再故意往系统提示里塞个时间戳，看命中率归零**——这个实验必须亲手做 |
 | **06** | 错误处理 + 重试 | `RestClient` 的 `.onStatus(...)` 按状态码分类；429 退避重试；注意总耗时 = 超时 × (重试数+1) |
