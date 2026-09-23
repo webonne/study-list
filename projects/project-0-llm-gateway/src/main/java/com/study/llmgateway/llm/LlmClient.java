@@ -21,7 +21,6 @@ import java.util.function.BooleanSupplier;
  *
  * <p>后续任务在这里接着长：
  * <ul>
- *   <li><b>#04 结构化输出</b>：请求体加 {@code response_format}</li>
  *   <li><b>#06 错误处理</b>：{@code .onStatus(...)} 按状态码分类，429 要读退避信息</li>
  * </ul>
  *
@@ -43,9 +42,16 @@ public class LlmClient {
     }
 
     public ChatCompletionResponse complete(List<ChatMessage> messages) {
-        ChatCompletionRequest request = ChatCompletionRequest.of(
-                properties.getModel(), messages, properties.getMaxTokens());
+        return complete(ChatCompletionRequest.of(properties.getModel(), messages, properties.getMaxTokens()));
+    }
 
+    /** #04：JSON 模式。{@code maxTokens} 单独传，结构化输出通常比聊天短，给太大浪费、给太小截断。 */
+    public ChatCompletionResponse completeJson(List<ChatMessage> messages, int maxTokens) {
+        return complete(ChatCompletionRequest.json(properties.getModel(), messages, maxTokens));
+    }
+
+    /** 最底层的非流式调用，请求体由调用方自己组装（对照实验里要用它关掉 JSON 模式）。 */
+    public ChatCompletionResponse complete(ChatCompletionRequest request) {
         return restClient.post()
                 .uri("/chat/completions")
                 .body(request)

@@ -38,9 +38,19 @@ app:
     connect-timeout: 10s
     read-timeout: 120s
 
+  structured:
+    # #04 结构化输出。抽取结果通常几百 token；太小会截断（TRUNCATED），太大出错时白花钱
+    max-tokens: 1024
+    # 校验失败后带着错误原因让模型改几次。每次都是一次完整的付费调用
+    max-repair-attempts: 1
+
   demo:
     # #01 首个请求演示，默认关闭——开启后每次启动都会真实调用一次 API（花钱）
     first-request: false
+    json-reliability:
+      # #04 对照实验：prompt-only vs json_object 各跑 runs 次，共 2×runs 次调用（花钱）
+      enabled: false
+      runs: 20
 
 logging:
   level:

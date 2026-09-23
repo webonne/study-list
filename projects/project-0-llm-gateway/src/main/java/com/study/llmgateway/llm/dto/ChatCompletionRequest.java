@@ -17,13 +17,19 @@ public record ChatCompletionRequest(
         List<ChatMessage> messages,
         @JsonProperty("max_tokens") Integer maxTokens,
         Double temperature,
-        Boolean stream) {
+        Boolean stream,
+        @JsonProperty("response_format") ResponseFormat responseFormat) {
 
     public static ChatCompletionRequest of(String model, List<ChatMessage> messages, int maxTokens) {
-        return new ChatCompletionRequest(model, messages, maxTokens, null, false);
+        return new ChatCompletionRequest(model, messages, maxTokens, null, false, null);
     }
 
     public static ChatCompletionRequest streaming(String model, List<ChatMessage> messages, int maxTokens) {
-        return new ChatCompletionRequest(model, messages, maxTokens, null, true);
+        return new ChatCompletionRequest(model, messages, maxTokens, null, true, null);
+    }
+
+    /** #04：打开 JSON 模式。提示词里必须出现 "json" 这个词，见 {@link ResponseFormat}。 */
+    public static ChatCompletionRequest json(String model, List<ChatMessage> messages, int maxTokens) {
+        return new ChatCompletionRequest(model, messages, maxTokens, null, false, ResponseFormat.JSON_OBJECT);
     }
 }

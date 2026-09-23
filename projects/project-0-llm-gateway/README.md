@@ -1,7 +1,7 @@
 # Project 0 · LLM 网关服务（Java）
 
 > 对应 [ROADMAP](../../ROADMAP.md) 任务 **#01–#07**，任务卡见 [阶段一](../../stages/stage-1-llm-api.md)。
-> **当前骨架覆盖 #01 和 #02**，#03–#07 的接入点已在代码里用 `#0X` 标出。
+> **当前覆盖 #01–#04**（#04 的对照实验需要真实 Key 跑），#05–#07 的接入点已在代码里用 `#0X` 标出。
 
 一句话：把大模型 API 包装成一个你熟悉的 Spring Boot 服务，顺便把"它和普通 RPC 有什么不一样"搞清楚。
 
@@ -58,6 +58,24 @@ curl -N -X POST localhost:8090/chat/stream -H 'Content-Type: application/json' \
 `-N` 关掉 curl 的缓冲，字才会一段段出来。事件名 `delta` 是增量文本，`done` 里有 `finishReason`、`ttftMs`（首字延迟）和 `elapsedMs`。关掉 curl 会同时关掉上游流。
 
 历史长度由 `app.llm.max-history-messages` 限制（默认 20，一问一答算两条）。超了会丢掉最早的完整轮次，不会从一轮中间切开。压缩（把丢掉的早期对话总结成一条）还没做。
+
+### 跑 #04：结构化输出
+
+```bash
+curl -X POST localhost:8090/extract/ticket -H 'Content-Type: application/json' \
+  -d '{"text":"今晚8点开始 order-service 下单接口大量超时，大概三成用户下不了单"}'
+```
+
+返回强类型的工单（`title / severity / component / summary / steps`），外加 `attempts`（调了几次模型）和 `failures`（中途遇到过哪些失败）。模型给不出合格结果时返回 **502**，带失败类型。
+
+**对照实验**（任务卡要求的"prompt-only vs JSON 模式"，⚠️ 会真实调用 2×runs 次，花钱）：
+
+```bash
+java -jar target/llm-gateway-*.jar \
+  --app.demo.json-reliability.enabled=true --app.demo.json-reliability.runs=50
+```
+
+跑完打印对照表，并写一份 CSV 到 `target/experiments/`。结论建议记进 `labs/`。
 
 ### 换别的模型服务
 
@@ -168,12 +186,54 @@ store.append(sessionId, Turn.assistant(reply));   // ← 少了这行，模型�
 | # | 任务 | 从哪下手 |
 |---|---|---|
 | **03** | 流式输出 | 已接到 `POST /chat/stream`：上游 `stream=true`，下游 `SseEmitter`，断开时关上游 |
-| **04** | 结构化输出 | 请求体加 `response_format`。⚠️ DeepSeek 的 JSON 模式和 OpenAI 的严格 schema 能力不完全一样，**先查当前文档确认支持到哪一步**，再决定要不要加一层校验兜底 |
+| **04** | 结构化输出 | 已接到 `POST /extract/ticket`：JSON 模式 + 五类失败分类 + 带原因的修复。**还差用真实 Key 跑对照实验**（50 次） |
 | **05** | 缓存 | 把稳定内容固定在最前，观测 `cacheHitRatio`。**再故意往系统提示里塞个时间戳，看命中率归零**——这个实验必须亲手做 |
 | **06** | 错误处理 + 重试 | `RestClient` 的 `.onStatus(...)` 按状态码分类；429 退避重试；注意总耗时 = 超时 × (重试数+1) |
 | **07** | 计量与成本 | `TokenUsage` 打到 Micrometer；缓存命中和未命中要**分开计价**才算得准 |
 
 完成后对照 [阶段一过关卡片](../../stages/stage-1-llm-api.md#-过关卡片) 自查，再做 Go 版（**#08–#12**，见 [Go 轨道](../../tracks/go.md)）。
+
+---
+
+## #04 结构化输出：这一节想让你注意的事
+
+### 1. DeepSeek 的 JSON 模式只保证"是 JSON"，不保证"符合结构"
+
+它只支持 `response_format: {"type":"json_object"}`，**不支持 `json_schema`**。
+少字段、类型不对、枚举越界，JSON 模式都不管——必须自己校验。另外三个前提（以官方文档为准）：
+提示词里**必须出现 "json" 这个词**；最好给一个格式示例；`max_tokens` 要给够。它还**偶尔会返回空内容**。
+
+### 2. 失败要分五类，因为修法完全不同
+
+| 类型 | 层 | 原因 | 修法 | 自动修复？ |
+|---|---|---|---|---|
+| `EMPTY` | — | 模型返回空内容 | 原样重发 | ✅ 重发 |
+| `TRUNCATED` | — | 被 `max_tokens` 截断 | 调大 `max_tokens` 或让输出更短 | ❌ 重发还会截断 |
+| `NOT_JSON` | 语法 | 根本不是 JSON | 带着错误原因让模型改 | ✅ 修复 |
+| `SCHEMA_MISMATCH` | 结构 | 缺字段、类型不对 | 同上 | ✅ 修复 |
+| `INVALID_VALUE` | 语义 | 枚举越界、空串、空列表 | 同上 | ✅ 修复 |
+
+**截断要最先判**：被截断的 JSON 本身也解析不了，不先看 `finish_reason` 就会被误判成 `NOT_JSON`，
+然后你去改提示词——而真正该改的是 `max_tokens`。
+
+### 3. 修复 ≠ 重试
+
+原样重发，模型大概率犯同样的错。**把它上一次的输出和"哪里不对"一起发回去**，它才知道要改什么。
+每次修复都是一次完整的付费调用，默认只给 1 次（`app.structured.max-repair-attempts`）。
+
+### 4. 格式上宽容，语义上严格
+
+- 宽容：枚举不分大小写（"p1" 也认）、多余字段忽略、外面包了 \`\`\`json 代码块也能捞出来
+- 严格：缺字段、空串、空列表、枚举越界，一律不放行
+
+"捞出来"的结果会标记 `rescued=true`。对照实验里单独统计它——**它说明模型没守规矩，只是我们兜住了**。
+
+### 5. 一个实测踩到的坑：Jackson 的大小写不敏感注解
+
+`@JsonFormat(with = ACCEPT_CASE_INSENSITIVE_VALUES)`（以及 `_PROPERTIES`），
+不管写在 record 字段上还是枚举类型上，**在 Jackson 2.19 下都不生效**——单测抓出来的，探针验证过。
+能用的是 `MapperFeature.ACCEPT_CASE_INSENSITIVE_ENUMS`，开在解析器专用的 mapper 上。
+**看起来对的注解，不等于真的生效。这就是为什么宽容策略也要有单测。**
 
 ---
 
@@ -189,6 +249,8 @@ java -jar target/llm-gateway-*.jar --app.llm.base-url=http://127.0.0.1:9099
 - 非流式：返回带缓存命中字段的 usage
 - 流式：每 0.3s 一段，共 20 段（约 6s）
 - 消息里含 `STALL`：吐 1 段后卡住，用来测超时
+- 工单抽取（#04）：开 JSON 模式返回纯 JSON，不开则返回包在代码块里的 JSON；
+  故障注入标记 `MOCK_EMPTY_ONCE` / `MOCK_TRUNC` / `MOCK_BADENUM` / `MOCK_ALWAYS_BAD`
 
 日志会记录每个请求上游实际发了几段、是否被提前断开——**"断开后上游有没有停"只能从上游这一侧看到。**
 

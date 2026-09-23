@@ -54,12 +54,16 @@
 
 ### #04 · T1.4 结构化输出（3h）
 
-- [ ] 用 structured outputs（`output_config.format`）或工具的 `strict: true` 拿到**保证合法**的 JSON
-- [ ] 反序列化成强类型对象（Java：Jackson → DTO；Go：`encoding/json` → struct）
-- [ ] ⚠️ 先查文档确认**这家服务的 JSON 模式严格到什么程度**——各家差别很大，不够严格就自己加一层校验兜底
-- [ ] 对比实验：用"请只返回 JSON"的 prompt 跑 50 次，统计失败率；再用结构化输出跑 50 次
+- [x] 打开 JSON 模式拿到 JSON（DeepSeek：`response_format: {"type":"json_object"}`，提示词里必须出现 "json"）
+- [x] 反序列化成强类型对象（Java：Jackson → DTO；Go：`encoding/json` → struct）
+- [x] ⚠️ 先查文档确认**这家服务的 JSON 模式严格到什么程度**——DeepSeek **不支持 `json_schema`**，只保证"是 JSON"，不保证字段对，所以自己加了三层校验 + 带原因的修复
+- [ ] 对比实验：用"请只返回 JSON"的 prompt 跑 50 次，统计失败率；再用 JSON 模式跑 50 次
+      （代码已就绪：`--app.demo.json-reliability.enabled=true --app.demo.json-reliability.runs=50`，**需要真实 Key**）
 
 **这是强类型语言接入 LLM 的关键点**：Java 和 Go 都最怕"有时候返回的不是 JSON"。别在 prompt 里跪求，用 API 能力解决。
+
+> 实现见 [project-0 README · #04](../projects/project-0-llm-gateway/README.md#04-结构化输出这一节想让你注意的事)：
+> 失败分五类（EMPTY / TRUNCATED / NOT_JSON / SCHEMA_MISMATCH / INVALID_VALUE），**修法各不相同**。
 
 ### #05 · T1.5 上下文缓存（3h）
 
